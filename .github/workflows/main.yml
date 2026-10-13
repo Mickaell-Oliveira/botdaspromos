@@ -1,0 +1,25 @@
+name: Robô do Telegram
+
+on:
+  schedule:
+    # Roda a cada 30 minutos
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Permite rodar o código manualmente apertando um botão
+
+jobs:
+  executar-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v3
+        
+      - name: Configurar o ambiente Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Instalar bibliotecas
+        run: pip install gspread google-auth google-generativeai requests
+        
+      - name: Executar o Bot
+        run: python bot_promos_sheets.py
