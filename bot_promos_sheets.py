@@ -31,18 +31,21 @@ planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 # ==========================================
 def gerar_copy(produto, preco_antigo, preco_novo, link):
     prompt = f"""
-    Aja como um copywriter focado em conversão. Crie uma mensagem curta para Telegram sobre esta promoção:
+    Aja como um copywriter focado em conversão para grupos de ofertas no Telegram. 
+    Crie uma mensagem curta sobre esta promoção:
+    
     Produto: {produto}
     Preço Original: R$ {preco_antigo}
     Preço Promoção: R$ {preco_novo}
     Link da Oferta: {link}
     
-    Regras:
-    - Gatilho de urgência forte.
-    - Mostre o desconto de forma clara.
-    - Emojis essenciais (🚨, 🔥, 🛒, 🏃‍♂️).
-    - CTA final apontando pro link.
-    - Sem saudações (fá direto ao ponto).
+    Regras estritas:
+    - Adapte o tom ao tipo de produto: se for um item de casa/dia a dia (como filtro de água, limpeza, mantimentos), foque na utilidade, necessidade e economia inteligente. Se for eletrônico caro, pode usar leve urgência.
+    - O tom deve ser amigável, leve e persuasivo. NUNCA pareça um vendedor desesperado ou agressivo.
+    - Mostre o desconto de forma clara (ex: cortando o preço antigo e destacando o novo).
+    - Use no máximo 3 emojis adequados ao produto e ao contexto.
+    - Termine com uma Chamada para Ação (CTA) convidativa apontando para o link.
+    - Sem saudações (vá direto ao ponto).
     """
     
     # Chamada corrigida com a versão real do modelo
