@@ -1,4 +1,4 @@
-import google.generativeai as genai
+from google import genai
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
@@ -45,9 +45,9 @@ def gerar_copy(produto, preco_antigo, preco_novo, link):
     - Sem saudações (fá direto ao ponto).
     """
     
-    # Nova chamada da API usando o modelo mais atualizado
+    # Chamada corrigida com a versão real do modelo
     resposta = cliente_gemini.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.8-flash',
         contents=prompt
     )
     return resposta.text
