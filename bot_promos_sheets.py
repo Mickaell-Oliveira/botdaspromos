@@ -8,9 +8,9 @@ import time
 # 1. CONFIGURAÇÕES GERAIS
 # ==========================================
 TELEGRAM_TOKEN = '(os.getenv('TELEGRAM_TOKEN') or '').strip()'
-TELEGRAM_CHAT_ID = '@NOME_DO_SEU_CANAL'
+TELEGRAM_CHAT_ID = '@OBugdasPromos'
 GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
-NOME_DA_PLANILHA = 'Coloque_Exatamente_o_Nome_da_Sua_Planilha_Aqui'
+NOME_DA_PLANILHA = 'BugdasPromos'
 
 genai.configure(api_key=GEMINI_API_KEY)
 modelo = genai.GenerativeModel('gemini-1.5-flash')
