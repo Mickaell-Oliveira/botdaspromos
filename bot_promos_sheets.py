@@ -40,20 +40,38 @@ def gerar_copy(produto, preco_antigo, preco_novo, link):
     Link da Oferta: {link}
     
     Regras estritas:
-    - Adapte o tom ao tipo de produto: se for um item de casa/dia a dia (como filtro de água, limpeza, mantimentos), foque na utilidade, necessidade e economia inteligente. Se for eletrônico caro, pode usar leve urgência.
-    - O tom deve ser amigável, leve e persuasivo. NUNCA pareça um vendedor desesperado ou agressivo.
-    - Mostre o desconto de forma clara (ex: cortando o preço antigo e destacando o novo).
-    - Use no máximo 3 emojis adequados ao produto e ao contexto.
-    - Termine com uma Chamada para Ação (CTA) convidativa apontando para o link.
-    - Sem saudações (vá direto ao ponto).
+    - Adapte o tom ao tipo de produto: item de casa (utilidade e economia), eletrônico (leve urgência).
+    - Amigável e persuasivo. NUNCA pareça desesperado.
+    - Mostre o desconto de forma clara.
+    - Máximo de 3 emojis.
+    - CTA final apontando pro link.
+    - Sem saudações.
     """
     
-    # Chamada corrigida com a versão real do modelo
-    resposta = cliente_gemini.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt
-    )
-    return resposta.text
+    # Lista atualizada direto de 2026!
+    modelos = ['gemini-3.8-flash', 'gemini-3.8-flash-8b']
+    
+    for modelo in modelos:
+        for tentativa in range(2): 
+            try:
+                resposta = cliente_gemini.models.generate_content(
+                    model=modelo,
+                    contents=prompt
+                )
+                return resposta.text
+                
+            except Exception as e:
+                if "503" in str(e) or "429" in str(e):
+                    tempo_espera = 3 * (tentativa + 1)
+                    print(f"⚠️ API ocupada no modelo {modelo}. Pausa de {tempo_espera}s...")
+                    time.sleep(tempo_espera)
+                else:
+                    print(f"❌ Erro inesperado no {modelo}: {e}. Tentando o próximo modelo...")
+                    break 
+                
+    print("🚨 Google caiu completamente. Usando texto de emergência.")
+    texto_reserva = f"🚨 *PREÇO BAIXO DETECTADO*\n\n{produto}\n\n❌ De: ~R$ {preco_antigo}~\n✅ Por: *R$ {preco_novo}*\n\n🛒 Garanta o seu aqui:\n👉 {link}"
+    return texto_reserva
 
 def enviar_telegram(texto, url_imagem):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
