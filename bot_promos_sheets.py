@@ -12,8 +12,8 @@ TELEGRAM_CHAT_ID = '@OBugdasPromos'
 GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
 NOME_DA_PLANILHA = 'BugdasPromos'
 
-genai.configure(api_key=GEMINI_API_KEY)
-modelo = genai.GenerativeModel('gemini-1.5-flash')
+# Nova forma de configurar o Gemini
+cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
 
 # ==========================================
 # 2. CONEXÃO COM GOOGLE SHEETS
@@ -44,7 +44,12 @@ def gerar_copy(produto, preco_antigo, preco_novo, link):
     - CTA final apontando pro link.
     - Sem saudações (fá direto ao ponto).
     """
-    resposta = modelo.generate_content(prompt)
+    
+    # Nova chamada da API usando o modelo mais atualizado
+    resposta = cliente_gemini.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt
+    )
     return resposta.text
 
 def enviar_telegram(texto, url_imagem):
