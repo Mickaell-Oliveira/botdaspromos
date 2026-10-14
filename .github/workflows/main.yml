@@ -16,10 +16,13 @@ jobs:
       - name: Configurar o ambiente Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           
       - name: Instalar bibliotecas
-        run: pip install gspread google-auth google-genai requests
+        run: pip install gspread google-auth google-genai requests feedparser
         
-      - name: Executar o Bot
+      - name: 1. Caçar Ofertas (Hunter)
+        run: python hunter_promos.py
+        
+      - name: 2. Postar no Telegram (Publisher)
         run: python bot_promos_sheets.py
