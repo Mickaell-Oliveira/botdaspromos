@@ -74,14 +74,46 @@ def gerar_copy(produto, preco_antigo, preco_novo, link):
     return texto_reserva
 
 def enviar_telegram(texto, url_imagem):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-    payload = {
+    url_photo = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+    
+    # 1. Tenta baixar a imagem pelo Python e enviar o arquivo binário direto (Evita 100% o erro "failed to get HTTP URL content")
+    try:
+        if url_imagem and url_imagem.startswith("http"):
+            img_resp = requests.get(url_imagem, headers=headers, timeout=10)
+            if img_resp.status_code == 200 and len(img_resp.content) > 1000:
+                files = {'photo': ('oferta.jpg', img_resp.content, 'image/jpeg')}
+                payload = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "caption": texto,
+                    "parse_mode": "Markdown"
+                }
+                res = requests.post(url_photo, data=payload, files=files).json()
+                
+                # Se der erro de formatação Markdown (ex: um caractere _ ou * aberto), reenvia em texto limpo
+                if not res.get("ok") and "can't parse entities" in res.get("description", ""):
+                    payload.pop("parse_mode")
+                    res = requests.post(url_photo, data=payload, files={'photo': ('oferta.jpg', img_resp.content, 'image/jpeg')}).json()
+                    
+                if res.get("ok"):
+                    return res
+    except Exception as e:
+        print(f"⚠️ Aviso ao baixar imagem ({e}). Tentando envio alternativo...")
+
+    # 2. Fallback: Se a imagem estiver corrompida ou inacessível, envia apenas o texto da promoção para não perder a venda!
+    url_msg = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload_msg = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "photo": url_imagem,
-        "caption": texto,
-        "parse_mode": "Markdown"
+        "text": texto,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": False
     }
-    return requests.post(url, data=payload).json()
+    res_msg = requests.post(url_msg, data=payload_msg).json()
+    if not res_msg.get("ok") and "can't parse entities" in res_msg.get("description", ""):
+        payload_msg.pop("parse_mode")
+        res_msg = requests.post(url_msg, data=payload_msg).json()
+        
+    return res_msg
 
 # ==========================================
 # 4. LOOP DE EXECUÇÃO (A MÁQUINA)
