@@ -2,24 +2,23 @@ name: Robô do Telegram
 
 on:
   schedule:
-    # Roda a cada 30 minutos
     - cron: '*/30 * * * *'
-  workflow_dispatch: # Permite rodar o código manualmente apertando um botão
+  workflow_dispatch:
 
 jobs:
   executar-script:
     runs-on: ubuntu-latest
     steps:
       - name: Baixar arquivos do repositório
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Configurar o ambiente Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           
       - name: Instalar bibliotecas
-        run: pip install gspread google-auth google-genai requests feedparser
+        run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper
         
       - name: 1. Caçar Ofertas (Hunter)
         run: python hunter_promos.py
