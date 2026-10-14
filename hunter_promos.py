@@ -1,5 +1,7 @@
 import feedparser
 import requests
+import cloudscraper
+from bs4 import BeautifulSoup
 import re
 import json
 import time
@@ -15,10 +17,8 @@ GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
 NOME_DA_PLANILHA = 'BugdasPromos'
 AMAZON_TAG = 'bugdaspromo07-20'
 
-# Feed RSS das promoções mais quentes do Pelando
-RSS_URL = 'https://www.pelando.com.br/rss/quentes'
-
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
+scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 
 # ==========================================
 # 2. CONEXÃO COM GOOGLE SHEETS
@@ -32,28 +32,103 @@ cliente_sheets = gspread.authorize(credenciais)
 planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 
 # ==========================================
-# 3. FUNÇÕES DO CAÇADOR (HUNTER)
+# 3. FUNÇÕES DE CAPTURA MULTI-FONTE
+# ==========================================
+def buscar_ofertas_brutas():
+    """Tenta capturar ofertas de múltiplas fontes (Feeds RSS e páginas de agregadores)."""
+    ofertas_encontradas = []
+    
+    # Lista de Feeds RSS de promoções/hardware/varejo para tentar em ordem
+    urls_rss = [
+        'https://www.pelando.com.br/rss',
+        'https://www.pelando.com.br/rss/quentes',
+        'https://www.hardmob.com.br/external.php?type=RSS2&forumids=407', # Fórum Hardmob Promoções (muito famoso por bugs reais!)
+        'https://adrenaline.com.br/rss'
+    ]
+    
+    for url in urls_rss:
+        try:
+            print(f"📡 Tentando fonte RSS: {url}")
+            resp = scraper.get(url, timeout=12)
+            print(f"   ↳ Status HTTP: {resp.status_code}")
+            
+            if resp.status_code == 200:
+                feed = feedparser.parse(resp.content)
+                if feed.entries:
+                    print(f"   ✅ Sucesso! {len(feed.entries)} itens encontrados.")
+                    for item in feed.entries[:8]:
+                        ofertas_encontradas.append({
+                            'titulo': item.get('title', ''),
+                            'descricao': item.get('summary', item.get('description', '')),
+                            'link': item.get('link', ''),
+                            'raw_item': item
+                        })
+                    if len(ofertas_encontradas) >= 5:
+                        return ofertas_encontradas
+        except Exception as e:
+            print(f"   ⚠️ Erro ao ler {url}: {e}")
+
+    # Fallback: Se todos os RSS falharem, tenta extrair direto do HTML/Next.js do Pelando ou Promobit
+    try:
+        print("📡 Tentando extração direta via HTML (Pelando Recentes)...")
+        resp = scraper.get("https://www.pelando.com.br/recentes", timeout=15)
+        print(f"   ↳ Status HTTP: {resp.status_code}")
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            script_next = soup.find('script', id='__NEXT_DATA__')
+            if script_next:
+                dados_json = json.loads(script_next.string)
+                # Varre o JSON em busca de objetos que pareçam ofertas (com title e price)
+                texto_json = json.dumps(dados_json)
+                matches = re.findall(r'\{"id":[^}]*"title":"([^"]+)"[^}]*"price":([0-9.]+)[^}]*\}', texto_json)
+                for titulo, preco in matches[:6]:
+                    ofertas_encontradas.append({
+                        'titulo': f"{titulo} - R\$ {preco}",
+                        'descricao': f"Oferta capturada: {titulo} por R\$ {preco}",
+                        'link': 'https://www.pelando.com.br',
+                        'raw_item': {}
+                    })
+    except Exception as e:
+        print(f"   ⚠️ Erro na extração HTML: {e}")
+
+    return ofertas_encontradas
+
+# ==========================================
+# 4. FUNÇÕES DE TRATAMENTO E AFILIAÇÃO
 # ==========================================
 def encurtar_url(url_longa):
-    """Transforma o link longo com a tag visível em um link curto e limpo."""
     try:
-        # Usa quote para garantir que caracteres especiais na URL não quebrem a requisição
         api_tinyurl = f"https://tinyurl.com/api-create.php?url={quote(url_longa, safe='')}"
         resposta = requests.get(api_tinyurl, timeout=5)
         if resposta.status_code == 200:
             return resposta.text.strip()
-    except Exception as e:
-        print(f"⚠️ Aviso: Não foi possível encurtar a URL ({e}). Usando original.")
+    except Exception:
+        pass
     return url_longa
 
-def resolver_e_afiliar_link(url_curta):
-    """Segue redirecionamentos, injeta a tag da Amazon e devolve um link curto limpo."""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+def extrair_link_de_loja_do_html(url_pagina):
+    """Se o link for de um fórum (como Hardmob) ou agregador, procura o link direto da loja (Amazon, Meli, etc) dentro do post."""
     try:
-        resposta = requests.get(url_curta, headers=headers, allow_redirects=True, timeout=10)
+        resp = scraper.get(url_pagina, timeout=10)
+        if resp.status_code == 200:
+            # Procura links de grandes lojas dentro do código da página
+            padrao_lojas = r'https?://(?:www\.)?(?:amazon\.com\.br|amzn\.to|mercadolivre\.com\.br|meli\.la|kabum\.com\.br|magazineluiza\.com\.br|magalu\.com|shopee\.com\.br)[^\s"\'<>]+'
+            links_achados = re.findall(padrao_lojas, resp.text)
+            if links_achados:
+                return links_achados[0]
+    except Exception:
+        pass
+    return url_pagina
+
+def resolver_e_afiliar_link(url_inicial):
+    try:
+        # Primeiro verifica se é link de fórum/agregador e tenta achar o link da loja lá dentro
+        if any(dominio in url_inicial for dominio in ['hardmob.com.br', 'pelando.com.br', 'adrenaline.com.br']):
+            url_inicial = extrair_link_de_loja_do_html(url_inicial)
+
+        resposta = scraper.get(url_inicial, allow_redirects=True, timeout=10)
         url_final = resposta.url
         
-        # Se o link final for da Amazon, limpa, injeta a Tag e ENCURTA!
         if "amazon.com.br" in url_final:
             match_asin = re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url_final)
             if match_asin:
@@ -68,25 +143,26 @@ def resolver_e_afiliar_link(url_curta):
                 
             return encurtar_url(link_com_tag)
                 
-        # Se for de outra loja, encurta também para manter o padrão visual do canal
         return encurtar_url(url_final)
     except Exception:
-        return encurtar_url(url_curta)
+        return encurtar_url(url_inicial)
 
 def extrair_dados_com_ia(titulo_bruto, descricao_bruta):
-    """Usa o Gemini para limpar o texto do RSS e devolver variáveis perfeitas em JSON."""
     prompt = f"""
-    Analise esta oferta capturada de um feed de promoções e extraia os dados estruturados.
+    Analise este item capturado de um feed/fórum de promoções.
     Título: {titulo_bruto}
-    Descrição: {descricao_bruta}
+    Descrição: {descricao_bruta[:1000]}
 
-    Retorne APENAS um objeto JSON válido (sem blocos de código markdown ```json) exatamente com estas chaves:
+    Se este item NÃO for uma promoção de produto (ex: for uma notícia comum sem preço), retorne apenas: {{"valido": false}}
+    Se for uma promoção com preço, retorne APENAS um objeto JSON válido (sem markdown ```json) com estas chaves:
     {{
-        "produto": "Nome limpo e comercial do produto (sem o preço no título)",
-        "preco_antigo": "Valor antigo apenas números e vírgula (se não houver no texto, estime um valor de mercado 20% maior que o preço novo)",
+        "valido": true,
+        "produto": "Nome limpo e comercial do produto (sem o preço e sem tags como [Loja])",
+        "preco_antigo": "Valor antigo apenas números e vírgula (se não houver, estime 25% a mais que o preço novo)",
         "preco_novo": "Valor da promoção apenas números e vírgula (ex: 1.299,90)",
         "cupom": "Código do cupom se mencionado, caso contrário deixe vazio",
-        "condicao": "Condição de pagamento se houver (ex: no PIX, no Ame, Cartão da loja), caso contrário deixe vazio"
+        "condicao": "Condição de pagamento se houver (ex: no PIX, Cartão), caso contrário deixe vazio",
+        "termo_busca_imagem": "Nome curto do produto em 3 palavras para busca"
     }}
     """
     
@@ -104,83 +180,84 @@ def extrair_dados_com_ia(titulo_bruto, descricao_bruta):
                     break
     return None
 
-def buscar_imagem_no_rss(item):
-    """Tenta extrair a URL da imagem do produto de dentro do item do RSS."""
-    if 'media_content' in item and len(item.media_content) > 0:
-        return item.media_content[0]['url']
-    if 'media_thumbnail' in item and len(item.media_thumbnail) > 0:
-        return item.media_thumbnail[0]['url']
+def buscar_imagem_produto(oferta, url_loja):
+    """Tenta achar a imagem no RSS ou direto na meta tag (og:image) da página da loja."""
+    item = oferta.get('raw_item', {})
+    if 'media_content' in item and len(item['media_content']) > 0:
+        return item['media_content'][0]['url']
+    if 'media_thumbnail' in item and len(item['media_thumbnail']) > 0:
+        return item['media_thumbnail'][0]['url']
         
-    descricao = item.get('summary', '')
-    match_img = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', descricao)
-    if match_img:
+    match_img = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', oferta.get('descricao', ''))
+    if match_img and not "emoji" in match_img.group(1) and not "icon" in match_img.group(1):
         return match_img.group(1)
+
+    # Se não achou no RSS, entra na página do produto e pega a foto de capa (OpenGraph Image)!
+    try:
+        resp = scraper.get(url_loja, timeout=8)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            og_image = soup.find("meta", property="og:image")
+            if og_image and og_image.get("content"):
+                return og_image["content"]
+    except Exception:
+        pass
         
-    return "[https://via.placeholder.com/600x600.png?text=Oferta+Imperdivel](https://via.placeholder.com/600x600.png?text=Oferta+Imperdivel)"
+    return "[https://placehold.co/600x600/111111/FFCC00/png?text=BUG+DAS+PROMOS](https://placehold.co/600x600/111111/FFCC00/png?text=BUG+DAS+PROMOS)"
 
 # ==========================================
-# 4. EXECUÇÃO PRINCIPAL
+# 5. EXECUÇÃO PRINCIPAL
 # ==========================================
 def executar_hunter():
-    print("🏹 Iniciando o Hunter de Promoções...")
-    feed = feedparser.parse(RSS_URL)
+    print("🏹 Iniciando o Hunter de Promoções (Modo Blindado)...")
+    ofertas = buscar_ofertas_brutas()
     
-    if not feed.entries:
-        print("⚠️ Nenhuma oferta encontrada no Feed RSS no momento.")
+    if not ofertas:
+        print("❌ Todas as fontes bloquearam a conexão ou estão vazias.")
         return
 
-    # Pega todos os títulos que já estão na planilha para NÃO duplicar ofertas
     registros_atuais = planilha.get_all_records()
     produtos_ja_cadastrados = [str(linha.get('Produto', '')).lower() for linha in registros_atuais]
     
     novas_adicionadas = 0
     
-    # Analisa as 5 promoções mais recentes do topo do feed por execução
-    for item in feed.entries[:5]:
-        titulo_bruto = item.title
-        descricao_bruta = item.get('summary', '')
-        link_rss = item.link
+    for oferta in ofertas:
+        print(f"\n🔎 Analisando: {oferta['titulo']}")
         
-        print(f"\n🔎 Analisando item do feed: {titulo_bruto}")
-        
-        # 1. Passa na IA para separar Nome, Preço, Cupom e Condição
-        dados = extrair_dados_com_ia(titulo_bruto, descricao_bruta)
-        if not dados or not dados.get('preco_novo'):
-            print("⏭️ Pulando: Não foi possível identificar um preço claro na oferta.")
+        dados = extrair_dados_com_ia(oferta['titulo'], oferta['descricao'])
+        if not dados or not dados.get('valido') or not dados.get('preco_novo'):
+            print("⏭️ Pulando: Item não é uma oferta válida com preço.")
             continue
             
         nome_produto = dados['produto']
         
-        # Verifica se já temos algo muito parecido na planilha
         if any(nome_produto.lower()[:15] in prod for prod in produtos_ja_cadastrados if prod):
             print(f"⏭️ Pulando: '{nome_produto}' já está na planilha.")
             continue
             
-        # 2. Captura a imagem e resolve/encurta o link (injetando tag Amazon se for o caso)
-        imagem_url = buscar_imagem_no_rss(item)
-        link_final_curto = resolver_e_afiliar_link(link_rss)
+        # Extrai o link real da loja e encurta
+        link_loja_bruto = extrair_link_de_loja_do_html(oferta['link'])
+        link_final_curto = resolver_e_afiliar_link(link_loja_bruto)
+        imagem_url = buscar_imagem_produto(oferta, link_loja_bruto)
         
-        # 3. Monta a linha exatamente na ordem das colunas A até H da planilha
         nova_linha = [
             nome_produto,                  # Coluna A: Produto
             dados.get('preco_antigo', ''), # Coluna B: Preco_Antigo
             dados.get('preco_novo', ''),   # Coluna C: Preco_Novo
-            link_final_curto,              # Coluna D: Link (Já encurtado!)
+            link_final_curto,              # Coluna D: Link
             imagem_url,                    # Coluna E: Imagem_URL
-            "",                            # Coluna F: Status (Fica VAZIO pro bot postar!)
+            "",                            # Coluna F: Status
             dados.get('cupom', ''),        # Coluna G: Cupom
             dados.get('condicao', '')      # Coluna H: Condicao
         ]
         
-        # 4. Insere na planilha!
         planilha.append_row(nova_linha)
         produtos_ja_cadastrados.append(nome_produto.lower())
         novas_adicionadas += 1
-        print(f"✅ Oferta adicionada na fila: {nome_produto} | R$ {dados.get('preco_novo')} | Link: {link_final_curto}")
+        print(f"✅ Adicionada na fila: {nome_produto} | R$ {dados.get('preco_novo')} | Link: {link_final_curto}")
         
         time.sleep(4)
         
-        # Limita a adicionar no máximo 2 ofertas novas por rodada
         if novas_adicionadas >= 2:
             break
 
