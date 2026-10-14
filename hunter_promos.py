@@ -1,6 +1,4 @@
-import feedparser
 import requests
-import cloudscraper
 from bs4 import BeautifulSoup
 import re
 import json
@@ -17,8 +15,18 @@ GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
 NOME_DA_PLANILHA = 'BugdasPromos'
 AMAZON_TAG = 'bugdaspromo07-20'
 
+# Lista de canais públicos do Telegram para o Hunter monitorar.
+# Você pode adicionar o @ de qualquer canal público de ofertas que você goste!
+CANAIS_FONTE = [
+    'pechinchou',
+    'promobit',
+    'canaltech_ofertas',
+    'adrenaline',
+    'mundoconectado'
+]
+
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
-scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
 
 # ==========================================
 # 2. CONEXÃO COM GOOGLE SHEETS
@@ -32,69 +40,79 @@ cliente_sheets = gspread.authorize(credenciais)
 planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 
 # ==========================================
-# 3. FUNÇÕES DE CAPTURA MULTI-FONTE
+# 3. CAPTURA DIRETA DO TELEGRAM WEB (SEM 403)
 # ==========================================
-def buscar_ofertas_brutas():
-    """Tenta capturar ofertas de múltiplas fontes (Feeds RSS e páginas de agregadores)."""
-    ofertas_encontradas = []
+def buscar_ofertas_telegram():
+    """Lê a página pública (t.me/s/) dos canais de ofertas sem bloqueio de firewall."""
+    ofertas_brutas = []
     
-    # Lista de Feeds RSS de promoções/hardware/varejo para tentar em ordem
-    urls_rss = [
-        'https://www.pelando.com.br/rss',
-        'https://www.pelando.com.br/rss/quentes',
-        'https://www.hardmob.com.br/external.php?type=RSS2&forumids=407', # Fórum Hardmob Promoções (muito famoso por bugs reais!)
-        'https://adrenaline.com.br/rss'
-    ]
-    
-    for url in urls_rss:
+    for canal in CANAIS_FONTE:
+        canal_limpo = canal.replace('https://t.me/s/', '').replace('https://t.me/', '').replace('@', '').strip()
+        url = f"https://t.me/s/{canal_limpo}"
+        
         try:
-            print(f"📡 Tentando fonte RSS: {url}")
-            resp = scraper.get(url, timeout=12)
+            print(f"📡 Lendo canal público: @{canal_limpo}...")
+            resp = requests.get(url, headers=HEADERS, timeout=12)
             print(f"   ↳ Status HTTP: {resp.status_code}")
             
-            if resp.status_code == 200:
-                feed = feedparser.parse(resp.content)
-                if feed.entries:
-                    print(f"   ✅ Sucesso! {len(feed.entries)} itens encontrados.")
-                    for item in feed.entries[:8]:
-                        ofertas_encontradas.append({
-                            'titulo': item.get('title', ''),
-                            'descricao': item.get('summary', item.get('description', '')),
-                            'link': item.get('link', ''),
-                            'raw_item': item
-                        })
-                    if len(ofertas_encontradas) >= 5:
-                        return ofertas_encontradas
-        except Exception as e:
-            print(f"   ⚠️ Erro ao ler {url}: {e}")
-
-    # Fallback: Se todos os RSS falharem, tenta extrair direto do HTML/Next.js do Pelando ou Promobit
-    try:
-        print("📡 Tentando extração direta via HTML (Pelando Recentes)...")
-        resp = scraper.get("https://www.pelando.com.br/recentes", timeout=15)
-        print(f"   ↳ Status HTTP: {resp.status_code}")
-        if resp.status_code == 200:
+            if resp.status_code != 200:
+                continue
+                
             soup = BeautifulSoup(resp.text, 'html.parser')
-            script_next = soup.find('script', id='__NEXT_DATA__')
-            if script_next:
-                dados_json = json.loads(script_next.string)
-                # Varre o JSON em busca de objetos que pareçam ofertas (com title e price)
-                texto_json = json.dumps(dados_json)
-                matches = re.findall(r'\{"id":[^}]*"title":"([^"]+)"[^}]*"price":([0-9.]+)[^}]*\}', texto_json)
-                for titulo, preco in matches[:6]:
-                    ofertas_encontradas.append({
-                        'titulo': f"{titulo} - R\$ {preco}",
-                        'descricao': f"Oferta capturada: {titulo} por R\$ {preco}",
-                        'link': 'https://www.pelando.com.br',
-                        'raw_item': {}
-                    })
-    except Exception as e:
-        print(f"   ⚠️ Erro na extração HTML: {e}")
-
-    return ofertas_encontradas
+            blocos_msg = soup.select('div.tgme_widget_message_wrap')
+            
+            if not blocos_msg:
+                print(f"   ⚠️ Canal @{canal_limpo} não possui visualização web pública ativa.")
+                continue
+                
+            print(f"   ✅ {len(blocos_msg)} mensagens encontradas! Analisando as mais recentes...")
+            
+            # Pega as últimas 4 mensagens do canal (de baixo para cima, que são as mais recentes)
+            for bloco in reversed(blocos_msg[-4:]):
+                div_texto = bloco.select_one('div.tgme_widget_message_text')
+                if not div_texto:
+                    continue
+                    
+                texto_msg = div_texto.get_text(separator='\n').strip()
+                
+                # Extrai todos os links externos presentes na mensagem
+                links_encontrados = []
+                for a_tag in div_texto.find_all('a', href=True):
+                    href = a_tag['href']
+                    # Ignora links de convite para outros grupos ou redes sociais
+                    if href.startswith('http') and not any(ignorar in href.lower() for ignorar in ['t.me/', 'whatsapp.com', 'instagram.com', 'linktr.ee', '/ofertas']):
+                        links_encontrados.append(href)
+                        
+                if not links_encontrados:
+                    continue
+                    
+                # Extrai a foto do produto (do post ou do preview do link, ignorando avatar do canal)
+                imagem_url = ""
+                for seletor_foto in ['a.tgme_widget_message_photo_wrap', 'i.link_preview_image', 'a.link_preview_right_image']:
+                    elem_foto = bloco.select_one(seletor_foto)
+                    if elem_foto and elem_foto.get('style'):
+                        match_bg = re.search(r"url\(['\"]?(https?://[^'\")]+)['\"]?\)", elem_foto['style'])
+                        if match_bg:
+                            imagem_url = match_bg.group(1)
+                            break
+                            
+                if not imagem_url:
+                    imagem_url = "https://placehold.co/600x600/111111/FFCC00/png?text=OFERTA+IMPERDIVEL"
+                    
+                ofertas_brutas.append({
+                    'canal': canal_limpo,
+                    'texto': texto_msg,
+                    'links': links_encontrados,
+                    'imagem': imagem_url
+                })
+                
+        except Exception as e:
+            print(f"   ⚠️ Erro ao ler @{canal_limpo}: {e}")
+            
+    return ofertas_brutas
 
 # ==========================================
-# 4. FUNÇÕES DE TRATAMENTO E AFILIAÇÃO
+# 4. TRATAMENTO DE LINKS E AFILIAÇÃO AMAZON
 # ==========================================
 def encurtar_url(url_longa):
     try:
@@ -106,63 +124,72 @@ def encurtar_url(url_longa):
         pass
     return url_longa
 
-def extrair_link_de_loja_do_html(url_pagina):
-    """Se o link for de um fórum (como Hardmob) ou agregador, procura o link direto da loja (Amazon, Meli, etc) dentro do post."""
-    try:
-        resp = scraper.get(url_pagina, timeout=10)
-        if resp.status_code == 200:
-            # Procura links de grandes lojas dentro do código da página
-            padrao_lojas = r'https?://(?:www\.)?(?:amazon\.com\.br|amzn\.to|mercadolivre\.com\.br|meli\.la|kabum\.com\.br|magazineluiza\.com\.br|magalu\.com|shopee\.com\.br)[^\s"\'<>]+'
-            links_achados = re.findall(padrao_lojas, resp.text)
-            if links_achados:
-                return links_achados[0]
-    except Exception:
-        pass
-    return url_pagina
-
 def resolver_e_afiliar_link(url_inicial):
+    """Desencurta links (amzn.to, link.amazon, etc.) pulando de salto em salto e troca a tag pela sua."""
+    url_atual = url_inicial
     try:
-        # Primeiro verifica se é link de fórum/agregador e tenta achar o link da loja lá dentro
-        if any(dominio in url_inicial for dominio in ['hardmob.com.br', 'pelando.com.br', 'adrenaline.com.br']):
-            url_inicial = extrair_link_de_loja_do_html(url_inicial)
+        # Segue até 6 redirecionamentos manualmente para pegar a URL da loja sem tomar bloqueio
+        for _ in range(6):
+            resp = requests.get(url_atual, headers=HEADERS, allow_redirects=False, timeout=8)
+            
+            if resp.status_code in (301, 302, 303, 307, 308):
+                prox_url = resp.headers.get('Location', '')
+                if not prox_url:
+                    break
+                if prox_url.startswith('/'):
+                    parsed_atual = urlparse(url_atual)
+                    prox_url = f"{parsed_atual.scheme}://{parsed_atual.netloc}{prox_url}"
+                url_atual = prox_url
+                
+                # Assim que identificar o domínio da Amazon, já para para não precisar carregar o site
+                if "amazon.com.br" in url_atual:
+                    break
+            else:
+                # Verifica se o redirecionamento está no HTML (comum em alguns encurtadores)
+                match_html = re.search(r'https?://(?:www\.)?amazon\.com\.br[^\s"\'<>]+', resp.text)
+                if match_html:
+                    url_atual = match_html.group(0)
+                break
 
-        resposta = scraper.get(url_inicial, allow_redirects=True, timeout=10)
-        url_final = resposta.url
-        
-        if "amazon.com.br" in url_final:
-            match_asin = re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url_final)
+        # Se descobriu que é Amazon, arranca a tag do concorrente e coloca a sua!
+        if "amazon.com.br" in url_atual:
+            match_asin = re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url_atual)
             if match_asin:
                 asin = match_asin.group(1)
                 link_com_tag = f"https://www.amazon.com.br/dp/{asin}?tag={AMAZON_TAG}"
             else:
-                parsed = urlparse(url_final)
+                parsed = urlparse(url_atual)
                 params = parse_qs(parsed.query)
                 params['tag'] = [AMAZON_TAG]
                 nova_query = urlencode(params, doseq=True)
                 link_com_tag = urlunparse(parsed._replace(query=nova_query))
                 
+            print("   💰 Link da Amazon detectado! Tag substituída pela sua com sucesso.")
             return encurtar_url(link_com_tag)
-                
-        return encurtar_url(url_final)
+            
+        return encurtar_url(url_atual)
     except Exception:
-        return encurtar_url(url_inicial)
+        return encurtar_url(url_atual)
 
-def extrair_dados_com_ia(titulo_bruto, descricao_bruta):
+def extrair_dados_com_ia(texto_post, lista_links):
     prompt = f"""
-    Analise este item capturado de um feed/fórum de promoções.
-    Título: {titulo_bruto}
-    Descrição: {descricao_bruta[:1000]}
+    Analise este post capturado de um canal de promoções no Telegram.
+    Texto do Post:
+    {texto_post}
+    
+    Links encontrados no post: {lista_links}
 
-    Se este item NÃO for uma promoção de produto (ex: for uma notícia comum sem preço), retorne apenas: {{"valido": false}}
-    Se for uma promoção com preço, retorne APENAS um objeto JSON válido (sem markdown ```json) com estas chaves:
+    Se este post NÃO for a oferta de um produto específico com preço (ex: for apenas aviso, lista de cupons sem produto ou propaganda do canal), retorne apenas: {{"valido": false}}
+    
+    Se for uma oferta válida, retorne APENAS um objeto JSON válido (sem markdown ```json) com estas chaves:
     {{
         "valido": true,
-        "produto": "Nome limpo e comercial do produto (sem o preço e sem tags como [Loja])",
-        "preco_antigo": "Valor antigo apenas números e vírgula (se não houver, estime 25% a mais que o preço novo)",
-        "preco_novo": "Valor da promoção apenas números e vírgula (ex: 1.299,90)",
-        "cupom": "Código do cupom se mencionado, caso contrário deixe vazio",
-        "condicao": "Condição de pagamento se houver (ex: no PIX, Cartão), caso contrário deixe vazio",
-        "termo_busca_imagem": "Nome curto do produto em 3 palavras para busca"
+        "produto": "Nome limpo e comercial do produto (sem o preço e sem emojis)",
+        "preco_antigo": "Valor antigo apenas números e vírgula (se não estiver explícito no texto, calcule um valor 25% maior que o preco_novo)",
+        "preco_novo": "Valor promocional apenas números e vírgula (ex: 1.299,90)",
+        "cupom": "Código do cupom se houver (ex: PROMODEHOJE), caso contrário deixe vazio",
+        "condicao": "Condição de pagamento se houver (ex: pagando no PIX, no cartão), caso contrário deixe vazio",
+        "link_escolhido": "Escolha da lista de links qual é o link de compra do produto (ignore links de grupos)"
     }}
     """
     
@@ -180,40 +207,15 @@ def extrair_dados_com_ia(titulo_bruto, descricao_bruta):
                     break
     return None
 
-def buscar_imagem_produto(oferta, url_loja):
-    """Tenta achar a imagem no RSS ou direto na meta tag (og:image) da página da loja."""
-    item = oferta.get('raw_item', {})
-    if 'media_content' in item and len(item['media_content']) > 0:
-        return item['media_content'][0]['url']
-    if 'media_thumbnail' in item and len(item['media_thumbnail']) > 0:
-        return item['media_thumbnail'][0]['url']
-        
-    match_img = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', oferta.get('descricao', ''))
-    if match_img and not "emoji" in match_img.group(1) and not "icon" in match_img.group(1):
-        return match_img.group(1)
-
-    # Se não achou no RSS, entra na página do produto e pega a foto de capa (OpenGraph Image)!
-    try:
-        resp = scraper.get(url_loja, timeout=8)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            og_image = soup.find("meta", property="og:image")
-            if og_image and og_image.get("content"):
-                return og_image["content"]
-    except Exception:
-        pass
-        
-    return "[https://placehold.co/600x600/111111/FFCC00/png?text=BUG+DAS+PROMOS](https://placehold.co/600x600/111111/FFCC00/png?text=BUG+DAS+PROMOS)"
-
 # ==========================================
 # 5. EXECUÇÃO PRINCIPAL
 # ==========================================
 def executar_hunter():
-    print("🏹 Iniciando o Hunter de Promoções (Modo Blindado)...")
-    ofertas = buscar_ofertas_brutas()
+    print("🏹 Iniciando o Hunter via Canais do Telegram...")
+    ofertas = buscar_ofertas_telegram()
     
     if not ofertas:
-        print("❌ Todas as fontes bloquearam a conexão ou estão vazias.")
+        print("⚠️ Nenhuma mensagem pública encontrada nos canais configurados.")
         return
 
     registros_atuais = planilha.get_all_records()
@@ -222,30 +224,30 @@ def executar_hunter():
     novas_adicionadas = 0
     
     for oferta in ofertas:
-        print(f"\n🔎 Analisando: {oferta['titulo']}")
+        primeira_linha = oferta['texto'].split('\n')[0][:60]
+        print(f"\n🔎 Analisando post de @{oferta['canal']}: {primeira_linha}...")
         
-        dados = extrair_dados_com_ia(oferta['titulo'], oferta['descricao'])
+        dados = extrair_dados_com_ia(oferta['texto'], oferta['links'])
         if not dados or not dados.get('valido') or not dados.get('preco_novo'):
-            print("⏭️ Pulando: Item não é uma oferta válida com preço.")
+            print("   ⏭️ Pulando: Post não é uma oferta de produto válida.")
             continue
             
         nome_produto = dados['produto']
         
+        # Evita cadastrar o mesmo produto duas vezes
         if any(nome_produto.lower()[:15] in prod for prod in produtos_ja_cadastrados if prod):
-            print(f"⏭️ Pulando: '{nome_produto}' já está na planilha.")
+            print(f"   ⏭️ Pulando: '{nome_produto}' já está na planilha.")
             continue
             
-        # Extrai o link real da loja e encurta
-        link_loja_bruto = extrair_link_de_loja_do_html(oferta['link'])
-        link_final_curto = resolver_e_afiliar_link(link_loja_bruto)
-        imagem_url = buscar_imagem_produto(oferta, link_loja_bruto)
+        link_bruto = dados.get('link_escolhido') or oferta['links'][0]
+        link_final_curto = resolver_e_afiliar_link(link_bruto)
         
         nova_linha = [
             nome_produto,                  # Coluna A: Produto
             dados.get('preco_antigo', ''), # Coluna B: Preco_Antigo
             dados.get('preco_novo', ''),   # Coluna C: Preco_Novo
             link_final_curto,              # Coluna D: Link
-            imagem_url,                    # Coluna E: Imagem_URL
+            oferta['imagem'],              # Coluna E: Imagem_URL
             "",                            # Coluna F: Status
             dados.get('cupom', ''),        # Coluna G: Cupom
             dados.get('condicao', '')      # Coluna H: Condicao
@@ -254,10 +256,11 @@ def executar_hunter():
         planilha.append_row(nova_linha)
         produtos_ja_cadastrados.append(nome_produto.lower())
         novas_adicionadas += 1
-        print(f"✅ Adicionada na fila: {nome_produto} | R$ {dados.get('preco_novo')} | Link: {link_final_curto}")
+        print(f"   ✅ Adicionada na fila: {nome_produto} | R$ {dados.get('preco_novo')} | Link: {link_final_curto}")
         
         time.sleep(4)
         
+        # Adiciona no máximo 2 ofertas por rodada para manter um ritmo natural no grupo
         if novas_adicionadas >= 2:
             break
 
