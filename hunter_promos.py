@@ -209,9 +209,33 @@ def executar_hunter():
             print("   ⏭️ DESCARTADO: A oferta não é da Amazon ou usa bloqueador de link.")
             continue
             
+        # REGRA DE NEGÓCIO: Filtro de Qualidade + Intercalação Foto/Vídeo
+        vai_pro_insta = dados.get('postar_insta', 'NAO').upper()
+        formato_escolhido = ""
+        status_insta = ""
+        
+        if vai_pro_insta == "SIM":
+            # Olha na planilha qual foi o último formato gerado para intercalar
+            formatos_anteriores = [str(l.get('Formato_Insta', '')) for l in registros_atuais if l.get('Formato_Insta')]
+            ultimo_formato = formatos_anteriores[-1] if formatos_anteriores else "VIDEO"
+            
+            formato_escolhido = "FOTO" if ultimo_formato == "VIDEO" else "VIDEO"
+            status_insta = "Aguardando Geracao"
+            print(f"   📸 Selecionado para o Instagram no formato: {formato_escolhido}")
+
         nova_linha = [
-            nome_produto, dados.get('preco_antigo', ''), dados.get('preco_novo', ''),
-            link_final_curto, oferta['imagem'], "", dados.get('cupom', ''), dados.get('condicao', '')
+            nome_produto,                  # Coluna A: Produto
+            dados.get('preco_antigo', ''), # Coluna B: Preco_Antigo
+            dados.get('preco_novo', ''),   # Coluna C: Preco_Novo
+            link_final_curto,              # Coluna D: Link
+            oferta['imagem'],              # Coluna E: Imagem_URL
+            "",                            # Coluna F: Status (Telegram)
+            dados.get('cupom', ''),        # Coluna G: Cupom
+            dados.get('condicao', ''),     # Coluna H: Condicao
+            vai_pro_insta,                 # Coluna I: Postar_Insta
+            formato_escolhido,             # Coluna J: Formato_Insta
+            status_insta,                  # Coluna K: Status_Insta
+            ""                             # Coluna L: Legenda_Insta
         ]
         
         planilha.append_row(nova_linha)
