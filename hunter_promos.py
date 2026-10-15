@@ -167,7 +167,8 @@ def extrair_dados_com_ia(texto_post, lista_links):
         "preco_novo": "Valor da promoção (só numeros)",
         "cupom": "Cupom (ou vazio)",
         "condicao": "Condição (ex: no PIX) (ou vazio)",
-        "link_escolhido": "O link de compra"
+        "link_escolhido": "O link de compra",
+        "postar_insta": "SIM se for um produto muito atraente/desejado, em alta, ou com super desconto para vitrine do Instagram, ou NAO se for um item muito simples que não trará visibilide para a página."
     }}
     """
     modelos = ['gemini-3.8-flash', 'gemini-3.8-flash-8b']
