@@ -19,7 +19,7 @@ CANAIS_FONTE = [
     'pechinchou',
     'promobit',
     'canaltech_ofertas',
-    'achados_amazon_br' # Adicionei um canal focado só em Amazon!
+    'achados_amazon_br'
 ]
 
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
@@ -82,7 +82,7 @@ def buscar_ofertas_telegram():
                     'links': links_encontrados,
                     'imagem': imagem_url
                 })
-        except Exception as e:
+        except Exception:
             pass
     return ofertas_brutas
 
@@ -100,7 +100,6 @@ def encurtar_url(url_longa):
     return url_longa
 
 def resolver_e_afiliar_link(url_inicial):
-    """Filtra tudo que não for Amazon e arranca páginas de espera."""
     url_atual = url_inicial
     try:
         for _ in range(8):
@@ -118,19 +117,16 @@ def resolver_e_afiliar_link(url_inicial):
                 if "amazon.com.br" in url_atual:
                     break
             else:
-                # Se caiu numa página HTML (como a tela de espera), procura o link da Amazon escondido lá dentro
                 match_html = re.search(r'https?://(?:www\.)?amazon\.com\.br[^\s"\'<>]+', resp.text)
                 if match_html:
                     url_atual = match_html.group(0)
                     break
-                # Ou procura um amzn.to na página de espera e continua cavando
                 match_amzn = re.search(r'https?://amzn\.to/[a-zA-Z0-9]+', resp.text)
                 if match_amzn:
                     url_atual = match_amzn.group(0)
                     continue
                 break
 
-        # SÓ PASSA SE CHEGAR NUM LINK DA AMAZON BRASIL
         if "amazon.com.br" in url_atual:
             match_asin = re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url_atual)
             if match_asin:
@@ -146,9 +142,7 @@ def resolver_e_afiliar_link(url_inicial):
             print("   💰 Link da Amazon rastreado e tag substituída!")
             return encurtar_url(link_com_tag)
             
-        # SE FOR KABUM, NIKE OU PÁGINA DE ESPERA QUE NÃO SOLTOU O LINK, ELE CANCELA!
         return None
-        
     except Exception:
         return None
 
@@ -162,13 +156,13 @@ def extrair_dados_com_ia(texto_post, lista_links):
     Se for uma oferta, retorne APENAS um JSON válido:
     {{
         "valido": true,
-        "produto": "Nome do produto",
-        "preco_antigo": "Valor antigo (ou calcule 25% a mais)",
-        "preco_novo": "Valor da promoção (só numeros)",
-        "cupom": "Cupom (ou vazio)",
-        "condicao": "Condição (ex: no PIX) (ou vazio)",
+        "produto": "Nome comercial limpo do produto (máximo 55 caracteres)",
+        "preco_antigo": "Valor antigo apenas números e vírgula (ex: 199,90). Se não houver no post, calcule 30% a mais que o preco_novo",
+        "preco_novo": "Valor da promoção apenas números e vírgula (ex: 129,90)",
+        "cupom": "Cupom se houver (ou vazio)",
+        "condicao": "Condição se houver, ex: no PIX (ou vazio)",
         "link_escolhido": "O link de compra",
-        "postar_insta": "SIM se for um produto muito atraente/desejado, em alta, ou com super desconto para vitrine do Instagram, ou NAO se for um item muito simples que não trará visibilide para a página."
+        "postar_insta": "SIM se for um produto atraente (eletrônicos, casa, cozinha, beleza, games, itens de marca com ótimo desconto) para vitrine do Instagram, ou NAO se for algo desinteressante/desconto pequeno."
     }}
     """
     modelos = ['gemini-3.8-flash', 'gemini-3.8-flash-8b']
@@ -203,26 +197,25 @@ def executar_hunter():
             print(f"   ⏭️ Pulando: '{nome_produto}' já cadastrado.")
             continue
             
-        # FILTRO DE OURO APLICADO AQUI:
         link_final_curto = resolver_e_afiliar_link(dados.get('link_escolhido') or oferta['links'][0])
         if not link_final_curto:
             print("   ⏭️ DESCARTADO: A oferta não é da Amazon ou usa bloqueador de link.")
             continue
             
-        # REGRA DE NEGÓCIO: Filtro de Qualidade + Intercalação Foto/Vídeo
-        vai_pro_insta = dados.get('postar_insta', 'NAO').upper()
+        # CÉREBRO DE INTERCALAÇÃO DO INSTAGRAM (FOTO vs VIDEO)
+        vai_pro_insta = dados.get('postar_insta', 'SIM').upper()
         formato_escolhido = ""
         status_insta = ""
         
         if vai_pro_insta == "SIM":
-            # Olha na planilha qual foi o último formato gerado para intercalar
-            formatos_anteriores = [str(l.get('Formato_Insta', '')) for l in registros_atuais if l.get('Formato_Insta')]
+            formatos_anteriores = [str(l.get('Formato_Insta', '')).upper() for l in registros_atuais if l.get('Formato_Insta')]
             ultimo_formato = formatos_anteriores[-1] if formatos_anteriores else "VIDEO"
             
             formato_escolhido = "FOTO" if ultimo_formato == "VIDEO" else "VIDEO"
             status_insta = "Aguardando Geracao"
+            registros_atuais.append({'Formato_Insta': formato_escolhido}) # Atualiza memória local para a próxima oferta do loop
             print(f"   📸 Selecionado para o Instagram no formato: {formato_escolhido}")
-
+            
         nova_linha = [
             nome_produto,                  # Coluna A: Produto
             dados.get('preco_antigo', ''), # Coluna B: Preco_Antigo
