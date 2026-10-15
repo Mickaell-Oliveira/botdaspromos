@@ -1,113 +1,122 @@
-from google import genai
 import requests
 import gspread
-from google.oauth2.service_account import Credentials
+import json
 import time
+from io import BytesIO
+from google.oauth2.service_account import Credentials
+from google import genai
+from PIL import Image
 
 # ==========================================
-# 1. CONFIGURAÇÕES GERAIS
+# 1. CONFIGURAÇÕES
 # ==========================================
-TELEGRAM_TOKEN = '(os.getenv('TELEGRAM_TOKEN') or '').strip()'
-TELEGRAM_CHAT_ID = '@OBugdasPromos'
 GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
 NOME_DA_PLANILHA = 'BugdasPromos'
+TELEGRAM_TOKEN = '(os.getenv('TELEGRAM_TOKEN') or '').strip()'
+TELEGRAM_CHAT_ID = '@OBugdasPromos'
 
-# Nova forma de configurar o Gemini
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
 
-# ==========================================
-# 2. CONEXÃO COM GOOGLE SHEETS
-# ==========================================
-escopos = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+escopos = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 credenciais = Credentials.from_service_account_file("credentials.json", scopes=escopos)
 cliente_sheets = gspread.authorize(credenciais)
 planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 
 # ==========================================
-# 3. FUNÇÕES BASE
+# 2. FUNÇÕES DE FORMATAÇÃO
 # ==========================================
-def gerar_copy(produto, preco_antigo, preco_novo, link):
-    prompt = f"""
-    Aja como um copywriter focado em conversão para grupos de ofertas no Telegram. 
-    Crie uma mensagem curta sobre esta promoção:
-    
-    Produto: {produto}
-    Preço Original: R$ {preco_antigo}
-    Preço Promoção: R$ {preco_novo}
-    Link da Oferta: {link}
-    
-    Regras estritas:
-    - Adapte o tom ao tipo de produto: item de casa (utilidade e economia), eletrônico (leve urgência).
-    - Amigável e persuasivo. NUNCA pareça desesperado.
-    - Mostre o desconto de forma clara.
-    - Máximo de 3 emojis.
-    - CTA final apontando pro link.
-    - Sem saudações.
-    """
-    
-    # Lista atualizada direto de 2026!
-    modelos = ['gemini-3.8-flash', 'gemini-3.8-flash-8b']
-    
-    for modelo in modelos:
-        for tentativa in range(2): 
-            try:
-                resposta = cliente_gemini.models.generate_content(
-                    model=modelo,
-                    contents=prompt
-                )
-                return resposta.text
-                
-            except Exception as e:
-                if "503" in str(e) or "429" in str(e):
-                    tempo_espera = 3 * (tentativa + 1)
-                    print(f"⚠️ API ocupada no modelo {modelo}. Pausa de {tempo_espera}s...")
-                    time.sleep(tempo_espera)
-                else:
-                    print(f"❌ Erro inesperado no {modelo}: {e}. Tentando o próximo modelo...")
-                    break 
-                
-    print("🚨 Google caiu completamente. Usando texto de emergência.")
-    texto_reserva = f"🚨 *PREÇO BAIXO DETECTADO*\n\n{produto}\n\n❌ De: ~R$ {preco_antigo}~\n✅ Por: *R$ {preco_novo}*\n\n🛒 Garanta o seu aqui:\n👉 {link}"
-    return texto_reserva
+def formatar_preco(valor):
+    """Garante R$, separador de milhar e centavos corretos."""
+    if not valor or str(valor).strip() == "": return ""
+    v = str(valor).replace("R$", "").replace(" ", "").strip()
+    v = v.replace(".", "")
+    if "," not in v and len(v) >= 3 and v.isdigit():
+        v = v[:-2] + "," + v[-2:]
+    elif "," not in v:
+        v = v + ",00"
+    try:
+        partes = v.split(",")
+        inteiro = int(partes[0])
+        decimal = partes[1][:2].ljust(2, '0')
+        inteiro_fmt = f"{inteiro:,}".replace(",", ".")
+        return f"R$ {inteiro_fmt},{decimal}"
+    except:
+        return f"R$ {valor}"
 
+def gerar_copy_telegram(produto, preco_antigo, preco_novo, link, cupom, condicao):
+    prompt = f"""
+    Crie UMA mensagem curta e chamativa para Telegram de ofertas:
+    Produto: {produto}
+    Preço Antigo: {preco_antigo}
+    Preço Novo: {preco_novo}
+    Link: {link}
+    Cupom: {cupom}
+    Condição: {condicao}
+    
+    Siga EXATAMENTE este formato:
+    🚨 PREÇO BAIXO DETECTADO
+    
+    {produto}
+    
+    ❌ De: ~{preco_antigo}~
+    ✅ Por: {preco_novo} {condicao}
+    
+    🛒 Garanta o seu aqui:
+    👉 {link}
+    """
+    for modelo in ['gemini-3.8-flash', 'gemini-3.8-flash-8b']:
+        try:
+            resp = cliente_gemini.models.generate_content(model=modelo, contents=prompt)
+            # Remove blocos markdown e asteriscos exagerados para manter limpo
+            return resp.text.strip().replace('**', '')
+        except Exception:
+            time.sleep(2)
+            
+    # Fallback caso a IA falhe
+    texto = f"🚨 PREÇO BAIXO DETECTADO\n\n{produto}\n\n❌ De: ~{preco_antigo}~\n✅ Por: {preco_novo} {condicao}\n"
+    if cupom: texto += f"🎟️ Cupom: {cupom}\n"
+    texto += f"\n🛒 Garanta o seu aqui:\n👉 {link}"
+    return texto
+
+# ==========================================
+# 3. ENVIO COM CORTE DE MARCA D'ÁGUA
+# ==========================================
 def enviar_telegram(texto, url_imagem):
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'}
     
-    # 1. Tenta baixar a imagem pelo Python e enviar o arquivo binário direto (Evita 100% o erro "failed to get HTTP URL content")
     try:
         if url_imagem and url_imagem.startswith("http"):
             img_resp = requests.get(url_imagem, headers=headers, timeout=10)
             if img_resp.status_code == 200 and len(img_resp.content) > 1000:
-                files = {'photo': ('oferta.jpg', img_resp.content, 'image/jpeg')}
-                payload = {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "caption": texto,
-                    "parse_mode": "Markdown"
-                }
+                
+                # CORTE INTELIGENTE: Arranca o topo da imagem para tirar o perfil de outros canais
+                img = Image.open(BytesIO(img_resp.content)).convert("RGB")
+                larg_img, alt_img = img.size
+                img_cortada = img.crop((0, int(alt_img * 0.15), larg_img, alt_img))
+                
+                img_byte_arr = BytesIO()
+                img_cortada.save(img_byte_arr, format='JPEG', quality=90)
+                img_bytes = img_byte_arr.getvalue()
+                
+                files = {'photo': ('oferta.jpg', img_bytes, 'image/jpeg')}
+                payload = {"chat_id": TELEGRAM_CHAT_ID, "caption": texto, "parse_mode": "Markdown"}
+                
                 res = requests.post(url_photo, data=payload, files=files).json()
                 
-                # Se der erro de formatação Markdown (ex: um caractere _ ou * aberto), reenvia em texto limpo
+                # Tratamento de erro caso o markdown da copy quebre a API
                 if not res.get("ok") and "can't parse entities" in res.get("description", ""):
                     payload.pop("parse_mode")
-                    res = requests.post(url_photo, data=payload, files={'photo': ('oferta.jpg', img_resp.content, 'image/jpeg')}).json()
+                    res = requests.post(url_photo, data=payload, files={'photo': ('oferta.jpg', img_bytes, 'image/jpeg')}).json()
                     
                 if res.get("ok"):
                     return res
     except Exception as e:
-        print(f"⚠️ Aviso ao baixar imagem ({e}). Tentando envio alternativo...")
+        print(f"⚠️ Aviso ao baixar/cortar imagem ({e}). Enviando sem foto...")
 
-    # 2. Fallback: Se a imagem estiver corrompida ou inacessível, envia apenas o texto da promoção para não perder a venda!
+    # Se a foto der erro total, envia só o texto
     url_msg = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload_msg = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": texto,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": False
-    }
+    payload_msg = {"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "Markdown", "disable_web_page_preview": False}
     res_msg = requests.post(url_msg, data=payload_msg).json()
     if not res_msg.get("ok") and "can't parse entities" in res_msg.get("description", ""):
         payload_msg.pop("parse_mode")
@@ -116,45 +125,38 @@ def enviar_telegram(texto, url_imagem):
     return res_msg
 
 # ==========================================
-# 4. LOOP DE EXECUÇÃO (A MÁQUINA)
+# 4. EXECUÇÃO
 # ==========================================
 def processar_planilha():
-    print("🔄 Lendo planilha...")
+    print("🔄 Lendo planilha para postar no Telegram...")
     registros = planilha.get_all_records()
     
-    for indice, linha in enumerate(registros, start=2): # start=2 pois a linha 1 é o cabeçalho
-        status = linha.get('Status', '')
-        
-        # Só processa se a coluna Status estiver vazia
-        if not status:
-            print(f"\n⚙️ Processando: {linha['Produto']}")
+    for i, linha in enumerate(registros):
+        # O bot só posta no Telegram as linhas que a Coluna F (Status) estiver vazia
+        if not str(linha.get('Status', '')).strip():
+            produto = linha['Produto']
+            print(f"⚙️ Processando: {produto}")
             
-            try:
-                # 1. Gera a Copy
-                copy = gerar_copy(
-                    linha['Produto'], 
-                    linha['Preco_Antigo'], 
-                    linha['Preco_Novo'], 
-                    linha['Link']
-                )
+            # Corrige a formatação dos preços antes de enviar para a Copy
+            preco_antigo = formatar_preco(linha.get('Preco_Antigo', ''))
+            preco_novo = formatar_preco(linha.get('Preco_Novo', ''))
+            
+            texto = gerar_copy_telegram(
+                produto, preco_antigo, preco_novo, 
+                linha['Link'], linha.get('Cupom', ''), linha.get('Condicao', '')
+            )
+            
+            res = enviar_telegram(texto, linha['Imagem_URL'])
+            
+            if res and res.get('ok'):
+                planilha.update_cell(i + 2, 6, "Postado")
+                print("✅ Enviado para o Canal e marcado como Postado!")
+            else:
+                erro = res.get('description', 'Erro desconhecido') if res else 'Falha na requisição'
+                planilha.update_cell(i + 2, 6, f"Erro: {erro}")
+                print(f"❌ Erro no envio: {erro}")
                 
-                # 2. Envia para o Telegram
-                resultado = enviar_telegram(copy, linha['Imagem_URL'])
-                
-                # 3. Atualiza a Planilha
-                if resultado.get("ok"):
-                    planilha.update_cell(indice, 6, "Postado") # Atualiza a coluna F (Status)
-                    print("✅ Enviado e marcado como Postado!")
-                else:
-                    erro = resultado.get('description')
-                    planilha.update_cell(indice, 6, f"Erro: {erro}")
-                    print(f"❌ Erro no envio: {erro}")
-                    
-                # Pausa de 3 segundos para respeitar o limite de requisições da API do Telegram
-                time.sleep(3) 
-                
-            except Exception as e:
-                print(f"❌ Erro crítico na linha {indice}: {e}")
+            time.sleep(3)
 
 if __name__ == "__main__":
     processar_planilha()
