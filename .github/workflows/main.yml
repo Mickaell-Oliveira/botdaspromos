@@ -30,4 +30,6 @@ jobs:
         run: python bot_promos_sheets.py
         
       - name: 3. Gerar Fotos/Reels e Checar Aprovações (Instagram Manager)
-        run: python insta_manager.py
+        run: |
+          python -c "p='insta_manager.py'; txt=open(p).read().replace('\u00a0',' ').replace('\t','    '); open(p,'w').write(txt)"
+          python insta_manager.py
