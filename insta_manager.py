@@ -17,7 +17,7 @@ GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
 NOME_DA_PLANILHA = 'BugdasPromos'
 
 TELEGRAM_TOKEN = '(os.getenv('TELEGRAM_TOKEN') or '').strip()'
-ADMIN_CHAT_ID = '5096433671'  # Apenas números, ex: '123456789'
+ADMIN_CHAT_ID = '5096433671'
 
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'}
@@ -72,7 +72,7 @@ def quebrar_texto(texto, fonte, largura_max, draw):
             linha_atual = p
     if linha_atual:
         linhas.append(linha_atual)
-    return linhas[:3] # Máximo de 3 linhas para manter o design limpo
+    return linhas[:3]
 
 def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", caminho_saida="post_insta.jpg"):
     largura = 1080
@@ -84,10 +84,10 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
     
     offset_y = 60 if formato == "FOTO" else 220
     
-    # 1. Topo Amarelo: BUG DETECTADO
+    # 1. Topo Amarelo: BUG DAS PROMOS
     draw.rounded_rectangle([(140, offset_y), (940, offset_y + 95)], radius=25, fill=(255, 204, 0))
     f_topo = carregar_fonte(46, True)
-    txt_topo = "🚨 BUG DAS PROMOS"
+    txt_topo = "BUG DAS PROMOS"
     bbox = draw.textbbox((0, 0), txt_topo, font=f_topo)
     draw.text(((largura - (bbox[2] - bbox[0])) / 2, offset_y + 22), txt_topo, fill=(15, 15, 15), font=f_topo)
     
@@ -101,7 +101,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
         resp = requests.get(url_img, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
             prod_img = Image.open(BytesIO(resp.content)).convert("RGBA")
-             fundo_branco = Image.new("RGBA", prod_img.size, "WHITE")
+            fundo_branco = Image.new("RGBA", prod_img.size, "WHITE")
             fundo_branco.paste(prod_img, (0, 0), prod_img)
             prod_img = fundo_branco.convert("RGB")
             
@@ -126,7 +126,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
     # 4. Preço Antigo Riscado
     if preco_antigo:
         f_antigo = carregar_fonte(36, False)
-        txt_antigo = f"De: R\$ {preco_antigo}"
+        txt_antigo = f"De: R$ {preco_antigo}"
         bbox = draw.textbbox((0, 0), txt_antigo, font=f_antigo)
         x_ant = (largura - (bbox[2] - bbox[0])) / 2
         draw.text((x_ant, y_texto), txt_antigo, fill=(170, 170, 170), font=f_antigo)
@@ -136,7 +136,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
         
     # 5. Preço Novo Gigante em Verde Neon
     f_novo = carregar_fonte(76, True)
-    txt_novo = f"Por: R\$ {preco_novo}"
+    txt_novo = f"Por: R$ {preco_novo}"
     bbox = draw.textbbox((0, 0), txt_novo, font=f_novo)
     draw.text(((largura - (bbox[2] - bbox[0])) / 2, y_texto), txt_novo, fill=(0, 235, 115), font=f_novo)
     y_texto += 95
@@ -144,7 +144,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
     # 6. Cupom (se houver)
     if cupom:
         f_cupom = carregar_fonte(34, True)
-        txt_cupom = f"🎟️ CUPOM: {cupom.upper()}"
+        txt_cupom = f"CUPOM: {cupom.upper()}"
         bbox = draw.textbbox((0, 0), txt_cupom, font=f_cupom)
         draw.text(((largura - (bbox[2] - bbox[0])) / 2, y_texto), txt_cupom, fill=(255, 204, 0), font=f_cupom)
         
@@ -152,7 +152,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
     rodape_y = altura - (115 if formato == "FOTO" else 260)
     draw.rounded_rectangle([(70, rodape_y), (1010, rodape_y + 85)], radius=20, fill=(255, 90, 0))
     f_cta = carregar_fonte(33, True)
-    txt_cta = "🔗 COMENTE 'EU QUERO' OU LINK NA BIO!"
+    txt_cta = "COMENTE 'EU QUERO' OU LINK NA BIO!"
     bbox = draw.textbbox((0, 0), txt_cta, font=f_cta)
     draw.text(((largura - (bbox[2] - bbox[0])) / 2, rodape_y + 24), txt_cta, fill=(255, 255, 255), font=f_cta)
     
@@ -167,14 +167,12 @@ def gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, texto_nar
     
     desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="VIDEO", caminho_saida=caminho_img)
     
-    # Gera a voz neural masculina brasileira via edge-tts
     texto_limpo = texto_narracao.replace('"', '').replace("'", "").replace("\n", " ")
     subprocess.run([
         "edge-tts", "--voice", "pt-BR-AntonioNeural", "--rate=+12%",
         "--text", texto_limpo, "--write-media", caminho_audio
     ], check=True)
     
-    # Junta a imagem estática + áudio em um vídeo MP4 compatível com Instagram/Telegram via FFmpeg
     subprocess.run([
         "ffmpeg", "-y", "-loop", "1", "-i", caminho_img, "-i", caminho_audio,
         "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "192k",
@@ -191,8 +189,8 @@ def criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, instr
     prompt = f"""
     Crie o conteúdo de um post de Instagram para a página @BugdasPromos:
     Produto: {produto}
-    Preço Antigo: R\$ {preco_antigo}
-    Preço Promoção: R\$ {preco_novo}
+    Preço Antigo: R$ {preco_antigo}
+    Preço Promoção: R$ {preco_novo}
     Cupom: {cupom} | Condição: {condicao}{obs}
 
     Retorne APENAS um JSON válido com estas 2 chaves:
@@ -208,7 +206,7 @@ def criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, instr
         except Exception:
             time.sleep(2)
     return {
-        "legenda": f"🚨 OFERTA NA AMAZON!\n\n📦 {produto}\n❌ De: R\$ {preco_antigo}\n✅ Por: R\$ {preco_novo}\n\n💬 Comente EU QUERO para receber o link ou acesse o grupo na Bio!\n\n#ofertas #promocao #amazonbrasil #desconto #achadinhos",
+        "legenda": f"🚨 OFERTA NA AMAZON!\n\n📦 {produto}\n❌ De: R$ {preco_antigo}\n✅ Por: R$ {preco_novo}\n\n💬 Comente EU QUERO para receber o link ou acesse o grupo na Bio!\n\n#ofertas #promocao #amazonbrasil #desconto #achadinhos",
         "narracao": f"Olha essa oferta na Amazon! {produto} por apenas {preco_novo} reais! Comenta eu quero ou corre no link da bio!"
     }
 
@@ -224,10 +222,10 @@ def enviar_para_aprovacao_admin(indice_linha, formato, caminho_midia, legenda):
     }
     
     texto_msg = (
-        f"🎨 *PRÉVIA DO INSTAGRAM (Linha {indice_linha})*\n"
-        f"📌 *Formato:* `{formato}`\n\n"
-        f"📝 *Legenda sugerida:*\n{legenda}\n\n"
-        f"💡 _Para pedir alterações (na legenda, preço ou trocar foto/vídeo), basta RESPONDER (Reply) a esta mensagem dizendo o que quer mudar!_"
+        f"🎨 PRÉVIA DO INSTAGRAM (Linha {indice_linha})\n"
+        f"📌 Formato: {formato}\n\n"
+        f"📝 Legenda sugerida:\n{legenda}\n\n"
+        f"💡 Para pedir alterações (na legenda, preço ou trocar foto/vídeo), basta RESPONDER (Reply) a esta mensagem dizendo o que quer mudar!"
     )
     
     endpoint = "sendPhoto" if formato == "FOTO" else "sendVideo"
@@ -242,6 +240,8 @@ def enviar_para_aprovacao_admin(indice_linha, formato, caminho_midia, legenda):
             "reply_markup": json.dumps(teclado)
         }
         resp = requests.post(url, data=data, files=files).json()
+        if not resp.get("ok"):
+            print(f"⚠️ Erro na API do Telegram ao enviar prévia: {resp}")
         return resp.get("result", {}).get("message_id")
 
 # ==========================================
@@ -275,9 +275,8 @@ def verificar_respostas_do_admin():
                 planilha.update_cell(linha_idx, COL_STATUS_INSTA, "Aprovado")
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={
                     "chat_id": ADMIN_CHAT_ID,
-                    "text": f"✅ *Linha {linha_idx} APROVADA!* Marcada como pronta para publicação no Instagram.",
-                    "reply_to_message_id": msg_id,
-                    "parse_mode": "Markdown"
+                    "text": f"✅ Linha {linha_idx} APROVADA! Marcada como pronta para publicação no Instagram.",
+                    "reply_to_message_id": msg_id
                 })
                 print(f"   ✅ Linha {linha_idx} aprovada pelo Admin!")
                 
@@ -286,9 +285,8 @@ def verificar_respostas_do_admin():
                 planilha.update_cell(linha_idx, COL_STATUS_INSTA, "Descartado")
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={
                     "chat_id": ADMIN_CHAT_ID,
-                    "text": f"❌ *Linha {linha_idx} DESCARTADA!* Não será postada no Instagram.",
-                    "reply_to_message_id": msg_id,
-                    "parse_mode": "Markdown"
+                    "text": f"❌ Linha {linha_idx} DESCARTADA! Não será postada no Instagram.",
+                    "reply_to_message_id": msg_id
                 })
                 print(f"   ❌ Linha {linha_idx} descartada pelo Admin.")
 
@@ -304,7 +302,6 @@ def verificar_respostas_do_admin():
                 print(f"   ✏️ Pedido de alteração recebido na Linha {linha_idx}: '{pedido_edicao}'")
                 aplicar_alteracao_com_ia(linha_idx, pedido_edicao, msg["message_id"])
 
-    # Limpa a fila de updates do Telegram confirmando o recebimento
     if maior_update_id > 0:
         requests.get(f"{url}?offset={maior_update_id + 1}", timeout=5)
 
@@ -355,14 +352,12 @@ def aplicar_alteracao_com_ia(indice_linha, pedido_admin, reply_msg_id):
         planilha.update_cell(indice_linha, COL_FORMATO_INSTA, novos.get("formato", formato_atual).upper())
         planilha.update_cell(indice_linha, COL_LEGENDA_INSTA, novos.get("legenda", legenda_atual))
         
-        # Marca para regerar imediatamente com os dados novos!
         planilha.update_cell(indice_linha, COL_STATUS_INSTA, f"Regerar|{pedido_admin}")
         
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={
             "chat_id": ADMIN_CHAT_ID,
-            "text": f"🔄 *Entendido!* Atualizei os dados da Linha {indice_linha} e já estou gerando a nova versão para você...",
-            "reply_to_message_id": reply_msg_id,
-            "parse_mode": "Markdown"
+            "text": f"🔄 Entendido! Atualizei os dados da Linha {indice_linha} e já estou gerando a nova versão para você...",
+            "reply_to_message_id": reply_msg_id
         })
     except Exception as e:
         print(f"⚠️ Erro ao processar edição com IA: {e}")
