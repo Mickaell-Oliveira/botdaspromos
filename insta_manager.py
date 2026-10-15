@@ -16,8 +16,8 @@ from PIL import Image, ImageDraw, ImageFont
 GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
 NOME_DA_PLANILHA = 'BugdasPromos'
 
-TELEGRAM_TOKEN = 'COLE_SEU_TOKEN_DO_TELEGRAM_AQUI'
-ADMIN_CHAT_ID = 'COLE_SEU_ADMIN_ID_AQUI'  # Apenas números, ex: '123456789'
+TELEGRAM_TOKEN = '(os.getenv('TELEGRAM_TOKEN') or '').strip()'
+ADMIN_CHAT_ID = '5096433671'  # Apenas números, ex: '123456789'
 
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'}
