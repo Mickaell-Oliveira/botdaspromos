@@ -100,11 +100,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
     try:
         resp = requests.get(url_img, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
-            prod_img = Image.open(BytesIO(resp.content)).convert("RGBA")
-            fundo_branco = Image.new("RGBA", prod_img.size, "WHITE")
-            fundo_branco.paste(prod_img, (0, 0), prod_img)
-            prod_img = fundo_branco.convert("RGB")
-            
+            prod_img = Image.open(BytesIO(resp.content)).convert("RGB")
             prod_img.thumbnail((820, altura_caixa - 60), Image.Resampling.LANCZOS)
             px = (largura - prod_img.width) // 2
             py = caixa_y1 + (altura_caixa - prod_img.height) // 2
