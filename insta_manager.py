@@ -13,13 +13,13 @@ from PIL import Image, ImageDraw, ImageFont
 # ==========================================
 # 1. CONFIGURAÇÕES GERAIS
 # ==========================================
-GEMINI_API_KEY = '(os.getenv('GEMINI_API_KEY') or '').strip()'
-NOME_DA_PLANILHA = 'BugdasPromos'
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+NOME_DA_PLANILHA = os.getenv('NOME_DA_PLANILHA', 'BugdasPromos')
 
-TELEGRAM_TOKEN = '(os.getenv('TELEGRAM_TOKEN') or '').strip()'
-ADMIN_CHAT_ID = '5096433671'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '5096433671')
 
-cliente_gemini = genai.Client(api_key=GEMINI_API_KEY)
+cliente_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else genai.Client()
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'}
 
 # ==========================================
@@ -29,7 +29,15 @@ escopos = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-credenciais = Credentials.from_service_account_file("credentials.json", scopes=escopos)
+
+google_creds = os.getenv("GOOGLE_CREDENTIALS")
+if google_creds:
+    credenciais = Credentials.from_service_account_info(json.loads(google_creds), scopes=escopos)
+elif os.path.exists("credentials.json"):
+    credenciais = Credentials.from_service_account_file("credentials.json", scopes=escopos)
+else:
+    raise FileNotFoundError("Credenciais do Google não encontradas! Defina a variável GOOGLE_CREDENTIALS ou mantenha o arquivo credentials.json.")
+
 cliente_sheets = gspread.authorize(credenciais)
 planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 
