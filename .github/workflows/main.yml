@@ -11,8 +11,8 @@ jobs:
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID || '5096433671' }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || '@OBugdasPromos' }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
     steps:
       - name: Baixar arquivos do repositório
