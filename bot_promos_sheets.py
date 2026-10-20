@@ -19,8 +19,14 @@ TELEGRAM_CHAT_ID = (os.getenv('TELEGRAM_CHAT_ID') or '@OBugdasPromos').strip()
 ADMIN_CHAT_ID = (os.getenv('ADMIN_CHAT_ID') or '5096433671').strip()
 DESCONTO_MINIMO_PCT = 20.0
 
+COL_PRODUTO = 1
+COL_PRECO_ANTIGO = 2
+COL_PRECO_NOVO = 3
 COL_STATUS_TG = 6
+COL_CUPOM = 7
 COL_STATUS_INSTA = 11
+
+MODELOS_GEMINI = ['gemini-3.8-flash-lite', 'gemini-3.8-flash']
 
 CUPONS_INVALIDOS = {
     'NENHUM', 'VAZIO', 'SEM CUPOM', 'NAO', 'NÃO', 'NONE', 'NULL',
@@ -109,42 +115,14 @@ def formatar_preco(valor):
     return f"R$ {inteiro_fmt},{centavos:02d}"
 
 def gerar_copy_telegram(produto, preco_antigo, preco_novo, link, cupom, condicao, desconto_pct=0.0):
+    """Gera a copy padronizada do Telegram instantaneamente (poupa 100% da cota da IA)."""
     tag_desconto = f" ({desconto_pct:.0f}% OFF)" if desconto_pct >= DESCONTO_MINIMO_PCT else ""
-    bloco_de = f"❌ De: ~{preco_antigo}~\n" if preco_antigo else ""
-    bloco_cupom = f"🎟️ Cupom: `{cupom}`\n" if cupom else ""
-
-    prompt = f"""
-    Crie UMA mensagem curta, persuasiva e chamativa para canal de ofertas no Telegram:
-    Produto: {produto}
-    Preço Antigo: {preco_antigo}
-    Preço Novo: {preco_novo}{tag_desconto}
-    Link: {link}
-    Cupom: {cupom}
-    Condição: {condicao}
-
-    Siga EXATAMENTE esta estrutura (não adicione comentários extras):
-    🚨 PREÇO BAIXO DETECTADO{tag_desconto}
-
-    📦 {produto}
-
-    {bloco_de}✅ Por: {preco_novo} {condicao}
-    {bloco_cupom}
-    🛒 Garanta o seu na Amazon:
-    👉 {link}
-    """
-    try:
-        resp = cliente_gemini.models.generate_content(model='gemini-3.8-flash', contents=prompt)
-        return resp.text.strip().replace('**', '')
-    except Exception as e:
-        print(f"   ⚠️ Aviso Gemini (usando template padrão): {e}")
-
-    # Fallback limpo caso a IA falhe
     texto = f"🚨 PREÇO BAIXO DETECTADO{tag_desconto}\n\n📦 {produto}\n\n"
     if preco_antigo:
         texto += f"❌ De: ~{preco_antigo}~\n"
-    texto += f"✅ Por: {preco_novo} {condicao}\n"
+    texto += f"✅ Por: {preco_novo} {condicao}\n".rstrip() + "\n"
     if cupom:
-        texto += f"🎟️ Cupom: {cupom}\n"
+        texto += f"🎟️ Cupom: `{cupom}`\n"
     texto += f"\n🛒 Garanta o seu na Amazon:\n👉 {link}"
     return texto
 
@@ -279,12 +257,39 @@ def interpretar_e_aplicar_sugestao_admin(linha_idx, texto_sugestao):
             "resumo_mudancas": "Uma frase curta e objetiva em português confirmando o que foi alterado"
         }}
         """
-        resp = cliente_gemini.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        dados = json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+        dados = None
+        for modelo in MODELOS_GEMINI:
+            try:
+                resp = cliente_gemini.models.generate_content(
+                    model=modelo,
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                dados = json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+                break
+            except Exception:
+                continue
+
+        # Fallback em Python caso a cota da IA esteja esgotada
+        if not dados:
+            txt_l = texto_sugestao.lower()
+            dados = {
+                "novo_produto": None,
+                "novo_preco_antigo": None,
+                "novo_preco_novo": None,
+                "novo_cupom": None,
+                "descartar": any(p in txt_l for p in ["descart", "rejeit", "apaga", "exclui", "remove"]),
+                "resumo_mudancas": f"Ajuste aplicado via comando: {texto_sugestao}"
+            }
+            m_preco = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})', texto_sugestao)
+            if m_preco:
+                if "antigo" in txt_l:
+                    dados["novo_preco_antigo"] = m_preco.group(1)
+                else:
+                    dados["novo_preco_novo"] = m_preco.group(1)
+            m_cupom = re.search(r'cupom\s+([A-Z0-9]{3,20})', texto_sugestao, re.IGNORECASE)
+            if m_cupom:
+                dados["novo_cupom"] = m_cupom.group(1).upper()
 
         if dados.get("descartar"):
             planilha.update_cell(linha_idx, COL_STATUS_TG, "Descartado")

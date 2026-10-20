@@ -3,11 +3,12 @@ import re
 import json
 import time
 import requests
+import cloudscraper
 import gspread
 from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
 from google import genai
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
+from urllib.parse import urlparse, quote
 
 # ==========================================
 # 1. CONFIGURAÇÕES GERAIS
@@ -38,10 +39,14 @@ LOJAS_CONCORRENTES = [
 
 CUPONS_INVALIDOS = {
     'NENHUM', 'VAZIO', 'SEM CUPOM', 'NAO', 'NÃO', 'NONE', 'NULL',
-    'PRIME', 'NO APP', 'APP', 'PIX', 'NO PIX'
+    'PRIME', 'NO APP', 'APP', 'PIX', 'NO PIX', 'APLICAR', 'ATIVAR'
 }
 
+MODELOS_GEMINI = ['gemini-3.8-flash-lite', 'gemini-3.8-flash']
+MODELOS_INDISPONIVEIS = set()
+
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else genai.Client()
+scraper_amz = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
@@ -108,13 +113,28 @@ def limpar_cupom(cupom_raw):
             return ""
     return c
 
+def limpar_titulo_produto(titulo_bruto):
+    """Higieniza o nome comercial do produto em Python sem precisar de IA."""
+    if not titulo_bruto:
+        return ""
+    t = re.sub(r'https?://\S+', '', str(titulo_bruto))
+    # Remove emojis e símbolos decorativos iniciais
+    t = re.sub(r'^[^\w\dÀ-ÿ]+', '', t).strip()
+    # Corta sufixos muito longos após hífen ou vírgula se já tiver tamanho suficiente
+    if len(t) > 55 and ' - ' in t:
+        parte = t.split(' - ')[0].strip()
+        if len(parte) >= 18:
+            t = parte
+    if len(t) > 55:
+        t = t[:55].rsplit(' ', 1)[0].strip()
+    return t
+
 def eh_post_de_concorrente(texto, links):
     """Descarta rapidamente posts que mencionam lojas concorrentes no texto ou nos links."""
     texto_lower = texto.lower()
     links_lower = " ".join(links).lower()
     combinado = f"{texto_lower} {links_lower}"
 
-    # Se menciona explicitamente outra loja e não menciona amazon/amzn
     if 'amazon' not in combinado and 'amzn.to' not in combinado:
         for loja in LOJAS_CONCORRENTES:
             if loja in combinado:
@@ -124,7 +144,7 @@ def eh_post_de_concorrente(texto, links):
 def validar_oferta_e_desconto(dados):
     """
     Garante que o preço é válido e que a oferta tem:
-    - Pelo menos 30% de desconto real (preco_antigo -> preco_novo), OU
+    - Pelo menos DESCONTO_MINIMO_PCT% de desconto real (preco_antigo -> preco_novo), OU
     - Um cupom de desconto válido.
     Retorna (aprovado: bool, motivo: str, desconto_pct: float, cupom_limpo: str)
     """
@@ -138,7 +158,6 @@ def validar_oferta_e_desconto(dados):
     desconto_pct = 0.0
     if preco_antigo > preco_novo:
         desconto_pct = ((preco_antigo - preco_novo) / preco_antigo) * 100.0
-        # Desconfia de erros absurdos de parsing (ex: 98% de desconto por erro de digitação)
         if desconto_pct >= 95.0:
             return False, f"Desconto irreal detectado ({desconto_pct:.1f}%)", desconto_pct, cupom
 
@@ -150,7 +169,7 @@ def validar_oferta_e_desconto(dados):
 
     if desconto_pct > 0:
         return False, f"Desconto de apenas {desconto_pct:.1f}% (mínimo exigido: {DESCONTO_MINIMO_PCT:.0f}% ou cupom)", desconto_pct, ""
-    return False, "Sem preço antigo para comprovar 30% de desconto e sem cupom", 0.0, ""
+    return False, f"Sem preço antigo para comprovar {DESCONTO_MINIMO_PCT:.0f}% de desconto e sem cupom", 0.0, ""
 
 # ==========================================
 # 4. CAPTURA DIRETA DO TELEGRAM WEB
@@ -257,7 +276,6 @@ def extrair_link_principal_de_agregador(html_texto):
     Extrai apenas o link de redirecionamento principal de páginas de agregadores
     (evitando capturar links de 'Outras ofertas' na barra lateral ou rodapé).
     """
-    # 1. Procura meta refresh ou script location
     match_meta = re.search(r'http-equiv=["\']refresh["\'][^>]*content=["\'][^"\']*url=(https?://[^"\'\s>]+)', html_texto, re.IGNORECASE)
     if match_meta:
         return match_meta.group(1)
@@ -266,17 +284,14 @@ def extrair_link_principal_de_agregador(html_texto):
     if match_loc:
         return match_loc.group(1)
 
-    # 2. Remove áreas de barra lateral, rodapé e ofertas relacionadas antes de procurar links
     soup = BeautifulSoup(html_texto, 'html.parser')
     for tag_lixo in soup.select('aside, footer, nav, .sidebar, .related, .outras-ofertas, .recommendations'):
         tag_lixo.decompose()
 
-    # Se a página do agregador indicar explicitamente outra loja no título/texto principal, aborta
     titulo_pag = (soup.title.string if soup.title else "").lower()
     if any(loja in titulo_pag for loja in ['mercado livre', 'shopee', 'magalu', 'aliexpress', 'kabum']):
         return None
 
-    # Procura botões diretos de ir para a loja ou links amzn.to no conteúdo principal
     for a in soup.find_all('a', href=True):
         href = a['href']
         if 'amzn.to/' in href or ('amazon.com.br' in href and extrair_asin_amazon(href)):
@@ -318,7 +333,6 @@ def resolver_e_afiliar_link(url_inicial):
         if "amazon.com.br" in url_atual.lower():
             asin = extrair_asin_amazon(url_atual)
             if not asin:
-                # Não aceita links genéricos da Amazon sem ASIN de produto
                 return None, None, None
 
             link_com_tag = f"https://www.amazon.com.br/dp/{asin}?tag={AMAZON_TAG}"
@@ -330,46 +344,76 @@ def resolver_e_afiliar_link(url_inicial):
 
 def consultar_pagina_amazon(asin):
     """
-    Tenta buscar título real, foto limpa e preços diretamente na página da Amazon Brasil
-    para validar o produto e enriquecer os dados.
+    Usa cloudscraper para buscar título real, foto limpa, preço atual, preço antigo,
+    porcentagem de desconto (.savingsPercentage) e cupom on-page direto na Amazon Brasil.
     """
-    info = {"titulo_amazon": "", "imagem_amazon": "", "preco_atual_amz": "", "preco_antigo_amz": ""}
+    info = {
+        "titulo_amazon": "",
+        "imagem_amazon": "",
+        "preco_atual_amz": "",
+        "preco_antigo_amz": "",
+        "desconto_pct_amz": 0.0,
+        "cupom_amz": ""
+    }
     try:
         url = f"https://www.amazon.com.br/dp/{asin}"
-        resp = requests.get(url, headers=HEADERS, timeout=8)
+        resp = scraper_amz.get(url, headers=HEADERS, timeout=10)
         if resp.status_code != 200:
             return info
 
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        elem_titulo = soup.select_one('#productTitle')
+        elem_titulo = soup.select_one('#productTitle, #title')
         if elem_titulo:
             info["titulo_amazon"] = elem_titulo.get_text(strip=True)
 
-        elem_img = soup.select_one('#landingImage, #imgBlkFront')
+        elem_img = soup.select_one('#landingImage, #imgBlkFront, #main-image')
         if elem_img:
             img_src = elem_img.get('data-old-hires') or elem_img.get('src') or ''
             if img_src.startswith('http'):
                 info["imagem_amazon"] = img_src
 
-        elem_preco = soup.select_one('.priceToPay .a-offscreen, .apexPriceToPay .a-offscreen, #priceblock_ourprice, #priceblock_dealprice')
+        elem_preco = soup.select_one(
+            '.priceToPay .a-offscreen, .apexPriceToPay .a-offscreen, '
+            '#corePriceDisplay_desktop_feature_div .a-price .a-offscreen, '
+            '#corePrice_feature_div .a-price .a-offscreen, '
+            '#priceblock_ourprice, #priceblock_dealprice'
+        )
         if elem_preco:
             info["preco_atual_amz"] = elem_preco.get_text(strip=True)
 
-        elem_antigo = soup.select_one('.basisPrice .a-offscreen, .a-text-price .a-offscreen')
+        elem_antigo = soup.select_one(
+            '.basisPrice .a-offscreen, span[data-a-strike="true"] .a-offscreen, '
+            '.a-text-price .a-offscreen, #listPrice, #priceblock_saleprice_lbl'
+        )
         if elem_antigo:
             info["preco_antigo_amz"] = elem_antigo.get_text(strip=True)
+
+        # Captura tag explícita de porcentagem de desconto na Amazon (ex: "-28%")
+        elem_pct = soup.select_one('.savingsPercentage, .reinventPriceSavingsPercentageMargin')
+        if elem_pct:
+            match_pct = re.search(r'(\d{1,2})\s*%', elem_pct.get_text())
+            if match_pct:
+                info["desconto_pct_amz"] = float(match_pct.group(1))
+
+        # Captura cupom aplicável na própria página da Amazon
+        elem_cupom = soup.select_one('#couponBadgeRegularVpc, .promoPriceBlockMessage, label[id*="coupon"]')
+        if elem_cupom:
+            txt_c = elem_cupom.get_text(" ", strip=True)
+            match_c = re.search(r'(\d{1,2}%\s*off|R\$\s*\d+(?:,\d{2})?\s*off)', txt_c, re.IGNORECASE)
+            if match_c:
+                info["cupom_amz"] = f"NO APP ({match_c.group(1).upper()})"
     except Exception:
         pass
     return info
 
 # ==========================================
-# 6. EXTRAÇÃO E VALIDAÇÃO (GEMINI + FALLBACK)
+# 6. EXTRAÇÃO EM PYTHON PRIMEIRO + IA EM LOTE
 # ==========================================
-def extrair_dados_fallback(texto_post, info_amazon):
+def extrair_dados_python(texto_post, info_amazon):
     """
-    Extrator determinístico via Regex + dados da Amazon caso a API do Gemini
-    sofra rate-limit ou indisponibilidade temporária.
+    Extrai título, preços, desconto e cupom 100% em Python (0 chamadas de IA)
+    combinando o texto do post no Telegram com os dados da página da Amazon.
     """
     # 1. Nome do Produto
     titulo = (info_amazon.get("titulo_amazon") or "").strip()
@@ -382,28 +426,51 @@ def extrair_dados_fallback(texto_post, info_amazon):
                 break
         if not titulo and linhas:
             titulo = re.sub(r'https?://\S+', '', linhas[0]).strip()
-    titulo = titulo[:55].strip()
+    titulo = limpar_titulo_produto(titulo)
 
-    # 2. Preços (do texto do post e da página da Amazon)
-    matches_precos = re.findall(r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)', texto_post, re.IGNORECASE)
-    valores = [preco_para_float(m) for m in matches_precos if preco_para_float(m) > 0]
+    # 2. Extração de Preços do Texto (suporta "R$ 199,90" e "De 299,90 por R$ 199,90")
+    matches_r = re.findall(r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)', texto_post, re.IGNORECASE)
+    valores = [preco_para_float(m) for m in matches_r if preco_para_float(m) > 0]
+
+    # Procura padrão "De X por Y" mesmo quando o primeiro não tem R$
+    match_de_por = re.search(
+        r'de\s*:?\s*(?:R\$\s*)?~?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)~?\s*(?:por|->|➡|👉|\n)+\s*(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)',
+        texto_post,
+        re.IGNORECASE
+    )
 
     p_novo_amz = preco_para_float(info_amazon.get("preco_atual_amz"))
     p_antigo_amz = preco_para_float(info_amazon.get("preco_antigo_amz"))
+    pct_amz = float(info_amazon.get("desconto_pct_amz") or 0.0)
 
     preco_novo_val = 0.0
     preco_antigo_val = 0.0
 
-    if len(valores) >= 2:
-        preco_antigo_val = max(valores[:2])
-        preco_novo_val = min(valores[:2])
-    elif len(valores) == 1:
-        preco_novo_val = valores[0]
-        if p_antigo_amz > preco_novo_val:
-            preco_antigo_val = p_antigo_amz
-    elif p_novo_amz > 0:
-        preco_novo_val = p_novo_amz
+    if match_de_por:
+        v1 = preco_para_float(match_de_por.group(1))
+        v2 = preco_para_float(match_de_por.group(2))
+        if v1 > v2 > 0:
+            preco_antigo_val, preco_novo_val = v1, v2
+
+    if preco_novo_val <= 0:
+        if len(valores) >= 2:
+            preco_antigo_val = max(valores[:2])
+            preco_novo_val = min(valores[:2])
+        elif len(valores) == 1:
+            preco_novo_val = valores[0]
+        elif p_novo_amz > 0:
+            preco_novo_val = p_novo_amz
+
+    # Complementa o preço antigo com os dados oficiais da Amazon se não estava no texto
+    if preco_antigo_val <= preco_novo_val and p_antigo_amz > preco_novo_val > 0:
         preco_antigo_val = p_antigo_amz
+
+    # Se o post ou a página da Amazon informou porcentagem de desconto explícita (ex: "25% OFF"), calcula o preço antigo correspondente
+    if preco_antigo_val <= preco_novo_val and preco_novo_val > 0:
+        match_pct_post = re.search(r'(\d{2})\s*%\s*(?:off|de\s*desconto)', texto_post, re.IGNORECASE)
+        pct_ref = float(match_pct_post.group(1)) if match_pct_post else pct_amz
+        if 15.0 <= pct_ref <= 85.0:
+            preco_antigo_val = round(preco_novo_val / (1.0 - (pct_ref / 100.0)), 2)
 
     # 3. Cupom
     cupom = ""
@@ -427,55 +494,65 @@ def extrair_dados_fallback(texto_post, info_amazon):
         "postar_insta": "SIM"
     }
 
-def extrair_dados_com_ia(texto_post, info_amazon):
-    contexto_amz = ""
-    if info_amazon.get("titulo_amazon"):
-        contexto_amz = f"""
-        Dados oficiais da página da Amazon para conferência:
-        - Título na Amazon: {info_amazon.get('titulo_amazon')}
-        - Preço atual na Amazon: {info_amazon.get('preco_atual_amz')}
-        - Preço antigo (De:) na Amazon: {info_amazon.get('preco_antigo_amz')}
-        """
+def refinar_lote_com_ia(ofertas_aprovadas):
+    """
+    Faz 1 ÚNICA chamada em lote (Batch) ao Gemini APENAS para as ofertas que
+    JÁ PASSARAM no filtro de >= 20% OFF ou cupom!
+    Se a cota diária estiver esgotada (429), mantém os dados limpos pelo Python.
+    """
+    if not ofertas_aprovadas:
+        return ofertas_aprovadas
+
+    itens_prompt = []
+    for idx, item in enumerate(ofertas_aprovadas):
+        itens_prompt.append({
+            "id": idx,
+            "titulo_bruto": item["dados"]["produto"],
+            "titulo_amazon": item["info_amz"].get("titulo_amazon", ""),
+            "preco_novo": item["dados"]["preco_novo"]
+        })
 
     prompt = f"""
-    Analise esta publicação de oferta:
-    Texto do Post:
-    {texto_post}
-    {contexto_amz}
+    Refine os nomes comerciais desta lista de produtos aprovados da Amazon Brasil (máximo 52 caracteres cada, limpo e atraente) e defina se tem apelo para vitrine do Instagram ("SIM" ou "NAO").
+    Lista: {json.dumps(itens_prompt, ensure_ascii=False)}
 
-    REGRAS OBRIGATÓRIAS:
-    1. Se NÃO for uma oferta de um produto específico, ou se o Texto do Post falar de um produto COMPLETAMENTE DIFERENTE do Título na Amazon (caso informado), ou se o post for exclusivo de outra loja (Mercado Livre, Shopee, Magalu, AliExpress), retorne: {{"valido": false}}
-    2. NUNCA invente nem estime o preco_antigo! Preencha "preco_antigo" APENAS se houver um preço antigo/original real mencionado no post (ex: "De R$ X por R$ Y") ou nos dados oficiais da Amazon acima. Caso contrário, deixe "preco_antigo": "".
-    3. Preencha "cupom" APENAS se existir um código de cupom explícito aplicável na Amazon (ex: "CASA10", "APP20"). Não coloque cupons de outras lojas (como MELHORDOML) nem palavras como "Prime" ou "No App".
-
-    Se for uma oferta válida da Amazon, retorne APENAS um JSON válido neste formato:
-    {{
-        "valido": true,
-        "produto": "Nome comercial limpo e claro do produto (máximo 55 caracteres)",
-        "preco_antigo": "Valor antigo apenas números e vírgula (ex: 199,90) ou vazio se não existir",
-        "preco_novo": "Valor promocional apenas números e vírgula (ex: 129,90)",
-        "cupom": "Código do cupom se houver (ou vazio)",
-        "condicao": "Condição de pagamento se houver, ex: no PIX, à vista, Prime (ou vazio)",
-        "postar_insta": "SIM se for um produto atraente (eletrônicos, eletrodomésticos, casa, cozinha, beleza, games, ferramentas, itens de marca) ou NAO se for item sem apelo visual."
-    }}
+    Retorne APENAS um JSON válido no formato de lista:
+    [
+        {{"id": 0, "produto": "Nome Comercial Limpo", "postar_insta": "SIM"}}
+    ]
     """
-    try:
-        resposta = cliente_gemini.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        texto_limpo = resposta.text.strip().replace('```json', '').replace('```', '').strip()
-        return json.loads(texto_limpo)
-    except Exception as e:
-        print(f"   ⚠️ Aviso Gemini (usando extração direta de fallback): {e}")
-        return extrair_dados_fallback(texto_post, info_amazon)
+
+    for modelo in MODELOS_GEMINI:
+        if modelo in MODELOS_INDISPONIVEIS:
+            continue
+        try:
+            resposta = cliente_gemini.models.generate_content(
+                model=modelo,
+                contents=prompt,
+                config={'response_mime_type': 'application/json'}
+            )
+            lista_refinada = json.loads(resposta.text.strip().replace('```json', '').replace('```', '').strip())
+            if isinstance(lista_refinada, list):
+                for ref in lista_refinada:
+                    idx = ref.get("id")
+                    if isinstance(idx, int) and 0 <= idx < len(ofertas_aprovadas):
+                        if ref.get("produto"):
+                            ofertas_aprovadas[idx]["dados"]["produto"] = limpar_titulo_produto(ref["produto"])
+                        if ref.get("postar_insta") in ("SIM", "NAO"):
+                            ofertas_aprovadas[idx]["dados"]["postar_insta"] = ref["postar_insta"]
+            print(f"   ✨ Lote de {len(ofertas_aprovadas)} oferta(s) refinado com 1 única chamada ({modelo})!")
+            return ofertas_aprovadas
+        except Exception as e:
+            MODELOS_INDISPONIVEIS.add(modelo)
+            print(f"   ℹ️ Modelo {modelo} sem cota/indisponível no momento — mantendo higienização nativa do Python.")
+
+    return ofertas_aprovadas
 
 # ==========================================
 # 7. EXECUÇÃO PRINCIPAL
 # ==========================================
 def executar_hunter():
-    print("🏹 Iniciando o Hunter de Promoções (Exclusivo Amazon | Mínimo 30% OFF ou Cupom)...")
+    print(f"🏹 Iniciando o Hunter de Promoções (Exclusivo Amazon | Mínimo {DESCONTO_MINIMO_PCT:.0f}% OFF ou Cupom)...")
     ofertas = buscar_ofertas_telegram()
     print(f"📦 Total de mensagens brutas coletadas nos canais: {len(ofertas)}")
 
@@ -483,11 +560,11 @@ def executar_hunter():
     produtos_ja_cadastrados = [str(linha.get('Produto', '')).lower() for linha in registros_atuais]
     links_ja_cadastrados = [str(linha.get('Link', '')).strip() for linha in registros_atuais]
     asins_processados = set()
-    novas_adicionadas = 0
+    candidatas_aprovadas = []
     analises_amazon = 0
 
     for oferta in ofertas:
-        if analises_amazon >= 10 or novas_adicionadas >= 3:
+        if analises_amazon >= 12 or len(candidatas_aprovadas) >= 3:
             break
 
         resumo_post = oferta['texto'].splitlines()[0][:65] if oferta['texto'] else "Sem título"
@@ -496,7 +573,7 @@ def executar_hunter():
         if eh_post_de_concorrente(oferta['texto'], oferta['links']):
             continue
 
-        # 2. Primeiro resolve o link para garantir que é da Amazon ANTES de gastar chamada de IA
+        # 2. Resolve o link para garantir que é da Amazon
         link_final_curto = None
         asin_encontrado = None
         for link_candidato in oferta['links']:
@@ -516,36 +593,49 @@ def executar_hunter():
 
         print(f"\n🔎 Oferta Amazon detectada ({asin_encontrado}): {resumo_post}...")
 
-        # 3. Consulta dados oficiais na página da Amazon (título, foto limpa e preço de referência)
+        # 3. Consulta dados oficiais na página da Amazon (título, foto limpa, preço e % OFF)
         info_amz = consultar_pagina_amazon(asin_encontrado)
 
-        # 4. Extrai e valida dados com o Gemini (ou Fallback automático)
-        dados = extrair_dados_com_ia(oferta['texto'], info_amz)
+        # 4. Extrai dados e valida desconto em Python ANTES de gastar qualquer cota da IA!
+        dados = extrair_dados_python(oferta['texto'], info_amz)
         if not dados or not dados.get('valido') or not dados.get('preco_novo'):
-            print("   ⏭️ DESCARTADO: Produto inválido, divergente ou sem preço.")
+            print("   ⏭️ DESCARTADO: Não foi possível identificar preço promocional.")
             continue
 
-        # Se a Amazon informou preço antigo oficial e o post não tinha, aproveita o preço antigo oficial da Amazon
-        if not dados.get('preco_antigo') and info_amz.get('preco_antigo_amz'):
-            dados['preco_antigo'] = float_para_str_planilha(preco_para_float(info_amz['preco_antigo_amz']))
-
-        # 5. Validação estrita: Desconto >= 30% OU Cupom válido
         aprovada, motivo, desconto_pct, cupom_limpo = validar_oferta_e_desconto(dados)
         if not aprovada:
             print(f"   ⏭️ DESCARTADO ({motivo}): {dados.get('produto')}")
             continue
 
-        nome_produto = dados['produto'].strip()
-        if any(nome_produto.lower()[:18] in prod for prod in produtos_ja_cadastrados if prod):
-            print(f"   ⏭️ Pulando: '{nome_produto}' já cadastrado na planilha.")
+        nome_preliminar = dados['produto'].strip()
+        if any(nome_preliminar.lower()[:18] in prod for prod in produtos_ja_cadastrados if prod):
+            print(f"   ⏭️ Pulando: '{nome_preliminar}' já cadastrado na planilha.")
             continue
 
-        # Padroniza preços para salvar na planilha
+        candidatas_aprovadas.append({
+            "oferta": oferta,
+            "info_amz": info_amz,
+            "dados": dados,
+            "link_final_curto": link_final_curto,
+            "motivo": motivo,
+            "cupom_limpo": cupom_limpo
+        })
+
+    # 5. Faz no máximo 1 chamada em lote ao Gemini apenas se houver ofertas aprovadas!
+    if candidatas_aprovadas:
+        candidatas_aprovadas = refinar_lote_com_ia(candidatas_aprovadas)
+
+    novas_adicionadas = 0
+    for item in candidatas_aprovadas:
+        dados = item["dados"]
+        info_amz = item["info_amz"]
+        oferta = item["oferta"]
+        nome_produto = dados["produto"].strip()
+
         preco_antigo_fmt = float_para_str_planilha(preco_para_float(dados.get('preco_antigo')))
         preco_novo_fmt = float_para_str_planilha(preco_para_float(dados.get('preco_novo')))
         imagem_final = info_amz.get("imagem_amazon") or oferta['imagem']
 
-        # 6. Cérebro de intercalação do Instagram (FOTO vs VIDEO)
         vai_pro_insta = str(dados.get('postar_insta', 'SIM')).upper()
         formato_escolhido = ""
         status_insta = ""
@@ -563,10 +653,10 @@ def executar_hunter():
             nome_produto,                  # Coluna A: Produto
             preco_antigo_fmt,              # Coluna B: Preco_Antigo
             preco_novo_fmt,                # Coluna C: Preco_Novo
-            link_final_curto,              # Coluna D: Link
+            item["link_final_curto"],      # Coluna D: Link
             imagem_final,                  # Coluna E: Imagem_URL
             "",                            # Coluna F: Status (Telegram - vai para aprovação)
-            cupom_limpo,                   # Coluna G: Cupom
+            item["cupom_limpo"],           # Coluna G: Cupom
             dados.get('condicao', ''),     # Coluna H: Condicao
             vai_pro_insta,                 # Coluna I: Postar_Insta
             formato_escolhido,             # Coluna J: Formato_Insta
@@ -576,12 +666,8 @@ def executar_hunter():
 
         planilha.append_row(nova_linha)
         produtos_ja_cadastrados.append(nome_produto.lower())
-        links_ja_cadastrados.append(link_final_curto)
         novas_adicionadas += 1
-        print(f"   ✅ APROVADA ({motivo}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
-
-        if novas_adicionadas >= 3:
-            break
+        print(f"   ✅ APROVADA ({item['motivo']}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
 
     print(f"\n🎯 Caçada finalizada! {novas_adicionadas} novas ofertas verificadas da AMAZON cadastradas.")
 

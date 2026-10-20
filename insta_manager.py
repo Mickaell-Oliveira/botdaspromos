@@ -294,6 +294,9 @@ def gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, texto_nar
 # ==========================================
 # 4. TEXTOS COM IA E ENVIO PARA APROVAÇÃO
 # ==========================================
+MODELOS_GEMINI = ['gemini-3.8-flash-lite', 'gemini-3.8-flash']
+MODELOS_INDISPONIVEIS = set()
+
 def criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, instrucao_extra="", desconto_pct=0.0):
     obs = f"\nATENÇÃO - O DONO PEDIU ESTA ALTERAÇÃO: {instrucao_extra}" if instrucao_extra else ""
     preco_fala = preco_para_fala(preco_novo)
@@ -311,21 +314,26 @@ def criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, instr
         "narracao": "Texto muito natural e vibrante (máximo 22 palavras) para locução de vídeo, escrevendo o preço por extenso ({preco_fala}). Chame para o grupo do Telegram na Bio!"
     }}
     """
-    try:
-        resp = cliente_gemini.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        return json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
-    except Exception as e:
-        print(f"   ⚠️ Aviso Gemini (usando copy padrão): {e}")
+    for modelo in MODELOS_GEMINI:
+        if modelo in MODELOS_INDISPONIVEIS:
+            continue
+        try:
+            resp = cliente_gemini.models.generate_content(
+                model=modelo,
+                contents=prompt,
+                config={'response_mime_type': 'application/json'}
+            )
+            return json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+        except Exception:
+            MODELOS_INDISPONIVEIS.add(modelo)
+            continue
 
     bloco_de = f"❌ De: {preco_antigo}\n" if preco_antigo else ""
     bloco_cupom = f"🎟️ Cupom: {cupom}\n" if cupom else ""
+    tag_off = f" ({desconto_pct:.0f}% OFF)" if desconto_pct >= DESCONTO_MINIMO_PCT else ""
     return {
-        "legenda": f"🚨 Baita oferta verificada na Amazon!\n\n📦 {produto}\n{bloco_de}✅ Por: {preco_novo} {condicao}\n{bloco_cupom}\n📲 Acesse o link da nossa Bio e entre no grupo do Telegram para garantir essa oferta!\n\n#ofertas #promocao #amazonbrasil #achadinhos #descontos",
-        "narracao": f"Se liga nesse desconto da Amazon! {produto} por apenas {preco_fala}! Corre pro nosso grupo do telegram no link da bio!"
+        "legenda": f"🚨 Oferta verificada na Amazon!{tag_off}\n\n📦 {produto}\n{bloco_de}✅ Por: {preco_novo} {condicao}\n{bloco_cupom}\n📲 Acesse o link da nossa Bio e entre no grupo do Telegram para garantir essa oferta antes que acabe!\n\n#ofertas #promocao #amazonbrasil #achadinhos #descontos",
+        "narracao": f"Olha esse desconto na Amazon! {produto} saindo por apenas {preco_fala}! Corre pro nosso grupo do telegram no link da bio!"
     }
 
 def enviar_para_aprovacao_admin(indice_linha, formato, caminho_midia, legenda, resumo_val):
@@ -411,12 +419,41 @@ def interpretar_e_aplicar_sugestao_admin(linha_idx, texto_sugestao):
             "resumo_mudancas": "Uma frase curta e objetiva em português confirmando o que foi alterado"
         }}
         """
-        resp = cliente_gemini.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        dados = json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+        dados = None
+        for modelo in MODELOS_GEMINI:
+            if modelo in MODELOS_INDISPONIVEIS:
+                continue
+            try:
+                resp = cliente_gemini.models.generate_content(
+                    model=modelo,
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                dados = json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+                break
+            except Exception:
+                MODELOS_INDISPONIVEIS.add(modelo)
+                continue
+
+        if not dados:
+            txt_l = texto_sugestao.lower()
+            dados = {
+                "novo_produto": None,
+                "novo_preco_antigo": None,
+                "novo_preco_novo": None,
+                "novo_cupom": None,
+                "descartar": any(p in txt_l for p in ["descart", "rejeit", "apaga", "exclui", "remove"]),
+                "resumo_mudancas": f"Ajuste aplicado via comando: {texto_sugestao}"
+            }
+            m_preco = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})', texto_sugestao)
+            if m_preco:
+                if "antigo" in txt_l:
+                    dados["novo_preco_antigo"] = m_preco.group(1)
+                else:
+                    dados["novo_preco_novo"] = m_preco.group(1)
+            m_cupom = re.search(r'cupom\s+([A-Z0-9]{3,20})', texto_sugestao, re.IGNORECASE)
+            if m_cupom:
+                dados["novo_cupom"] = m_cupom.group(1).upper()
 
         if dados.get("descartar"):
             planilha.update_cell(linha_idx, COL_STATUS_TG, "Descartado")
