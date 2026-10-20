@@ -15,7 +15,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 GEMINI_API_KEY = (os.getenv('GEMINI_API_KEY') or '').strip()
 NOME_DA_PLANILHA = (os.getenv('NOME_DA_PLANILHA') or 'BugdasPromos').strip()
 AMAZON_TAG = (os.getenv('AMAZON_TAG') or 'bugdaspromo07-20').strip()
-DESCONTO_MINIMO_PCT = 30.0
+DESCONTO_MINIMO_PCT = 20.0
 
 CANAIS_FONTE = [
     'pechinchou',
