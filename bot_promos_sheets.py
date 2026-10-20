@@ -66,6 +66,9 @@ def preco_para_float(valor_str):
         partes = s.split('.')
         if len(partes[-1]) == 3 and len(partes) > 1:
             s = s.replace('.', '')
+    elif s.isdigit() and len(s) >= 3:
+        # Corrige valores em que o Google Sheets/gspread removeu a vírgula dos centavos (ex: "689,00" -> "68900")
+        s = s[:-2] + "." + s[-2:]
     try:
         return float(s)
     except ValueError:
@@ -409,8 +412,7 @@ def verificar_respostas_do_admin():
 def processar_planilha():
     print("🔄 Verificando aprovações do Admin e lendo planilha do Telegram...")
     verificar_respostas_do_admin()
-    registros = planilha.get_all_records()
-    previas_enviadas = 0
+    registros = planilha.get_all_records(numericise_ignore=['all'])
 
     for i, linha in enumerate(registros):
         indice_planilha = i + 2
@@ -419,24 +421,23 @@ def processar_planilha():
         if not produto:
             continue
 
-        # 1. Validar preços e regra de desconto (>= 30% ou Cupom válido)
-        valida, resumo_val, desconto_pct, cupom_limpo = validar_oferta_para_publicacao(
-            linha.get('Preco_Antigo', ''),
-            linha.get('Preco_Novo', ''),
-            linha.get('Cupom', '')
-        )
+        # Publica no Canal @OBugdasPromos ofertas novas ("") ou que estavam aguardando ("Em Aprovacao" / "Aprovado")
+        if status_atual == "" or status_atual.lower() in ["aprovado", "em aprovacao"] or "chat_id is empty" in status_atual:
+            valida, resumo_val, desconto_pct, cupom_limpo = validar_oferta_para_publicacao(
+                linha.get('Preco_Antigo', ''),
+                linha.get('Preco_Novo', ''),
+                linha.get('Cupom', '')
+            )
 
-        preco_antigo_fmt = formatar_preco(linha.get('Preco_Antigo', ''))
-        preco_novo_fmt = formatar_preco(linha.get('Preco_Novo', ''))
-
-        # CASO A: Oferta já foi APROVADA pelo Admin -> Publicar no Canal @OBugdasPromos!
-        if status_atual.lower() == "aprovado":
             if not valida:
+                print(f"⏭️ Descartando linha {indice_planilha} ({produto}): {resumo_val}")
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Descartado: {resumo_val}")
-                print(f"⏭️ Linha {indice_planilha} bloqueada na validação final ({resumo_val}).")
                 continue
 
-            print(f"🚀 Publicando oferta aprovada no canal {TELEGRAM_CHAT_ID}: {produto}")
+            preco_antigo_fmt = formatar_preco(linha.get('Preco_Antigo', ''))
+            preco_novo_fmt = formatar_preco(linha.get('Preco_Novo', ''))
+
+            print(f"🚀 Publicando oferta no canal {TELEGRAM_CHAT_ID}: {produto} ({ preco_antigo_fmt } -> { preco_novo_fmt })")
             texto = gerar_copy_telegram(
                 produto, preco_antigo_fmt, preco_novo_fmt,
                 linha.get('Link', ''), cupom_limpo, linha.get('Condicao', ''),
@@ -445,42 +446,11 @@ def processar_planilha():
             res = enviar_mensagem_telegram(TELEGRAM_CHAT_ID, texto, linha.get('Imagem_URL', ''))
             if res and res.get('ok'):
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, "Postado")
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                    data={"chat_id": ADMIN_CHAT_ID, "text": f"🚀 Linha {indice_planilha} ({produto}) publicada com sucesso em {TELEGRAM_CHAT_ID}!"}
-                )
                 print("✅ Enviado para o Canal e marcado como Postado!")
             else:
                 erro = res.get('description', 'Erro desconhecido') if res else 'Falha na requisição'
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Erro: {erro}")
                 print(f"❌ Erro no envio para o canal: {erro}")
-            time.sleep(2)
-
-        # CASO B: Oferta nova (Status vazio ou erro antigo de chat_id) -> Validar e enviar prévia para o Admin aprovar
-        elif status_atual == "" or "chat_id is empty" in status_atual:
-            if not valida:
-                print(f"⏭️ Descartando linha {indice_planilha} ({produto}): {resumo_val}")
-                planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Descartado: {resumo_val}")
-                continue
-
-            if previas_enviadas >= 3:
-                continue
-
-            print(f"📩 Enviando prévia da linha {indice_planilha} para aprovação do Admin: {produto} ({resumo_val})")
-            texto = gerar_copy_telegram(
-                produto, preco_antigo_fmt, preco_novo_fmt,
-                linha.get('Link', ''), cupom_limpo, linha.get('Condicao', ''),
-                desconto_pct=desconto_pct
-            )
-            res = enviar_previa_canal_para_admin(indice_planilha, texto, linha.get('Imagem_URL', ''), resumo_val)
-            if res and res.get('ok'):
-                planilha.update_cell(indice_planilha, COL_STATUS_TG, "Em Aprovacao")
-                previas_enviadas += 1
-                print("   ✅ Prévia enviada ao Admin e marcada como 'Em Aprovacao'!")
-            else:
-                erro = res.get('description', 'Erro desconhecido') if res else 'Falha na requisição'
-                planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Erro: {erro}")
-                print(f"   ❌ Erro ao enviar prévia ao Admin: {erro}")
             time.sleep(2)
 
 if __name__ == "__main__":

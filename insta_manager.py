@@ -103,6 +103,9 @@ def preco_para_float(valor_str):
         partes = s.split('.')
         if len(partes[-1]) == 3 and len(partes) > 1:
             s = s.replace('.', '')
+    elif s.isdigit() and len(s) >= 3:
+        # Corrige valores em que o Google Sheets/gspread removeu a vírgula dos centavos (ex: "689,00" -> "68900")
+        s = s[:-2] + "." + s[-2:]
     try:
         return float(s)
     except ValueError:
@@ -552,7 +555,7 @@ def verificar_respostas_do_admin():
 def processar_fila_instagram():
     verificar_respostas_do_admin()
     print("\n🎨 Verificando fila de criação do Instagram...")
-    registros = planilha.get_all_records()
+    registros = planilha.get_all_records(numericise_ignore=['all'])
     gerados = 0
 
     for indice, linha in enumerate(registros, start=2):

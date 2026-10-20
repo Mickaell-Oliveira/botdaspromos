@@ -664,7 +664,7 @@ def executar_hunter():
             ""                             # Coluna L: Legenda_Insta
         ]
 
-        planilha.append_row(nova_linha)
+        planilha.append_row(nova_linha, value_input_option='RAW')
         produtos_ja_cadastrados.append(nome_produto.lower())
         novas_adicionadas += 1
         print(f"   ✅ APROVADA ({item['motivo']}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
