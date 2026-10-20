@@ -17,7 +17,7 @@ NOME_DA_PLANILHA = (os.getenv('NOME_DA_PLANILHA') or 'BugdasPromos').strip()
 TELEGRAM_TOKEN = (os.getenv('TELEGRAM_TOKEN') or '').strip()
 TELEGRAM_CHAT_ID = (os.getenv('TELEGRAM_CHAT_ID') or '@OBugdasPromos').strip()
 ADMIN_CHAT_ID = (os.getenv('ADMIN_CHAT_ID') or '5096433671').strip()
-DESCONTO_MINIMO_PCT = 30.0
+DESCONTO_MINIMO_PCT = 20.0
 
 COL_STATUS_TG = 6
 COL_STATUS_INSTA = 11
@@ -212,12 +212,124 @@ def enviar_previa_canal_para_admin(indice_linha, texto_oferta, url_imagem, resum
     return enviar_mensagem_telegram(ADMIN_CHAT_ID, cabecalho + texto_oferta, url_imagem, reply_markup=teclado)
 
 # ==========================================
-# 4. LEITURA DE APROVAÇÕES DO ADMIN
+# 4. LEITURA DE APROVAÇÕES E SUGESTÕES DO ADMIN
 # ==========================================
+def responder_callback(cb_id, texto="Comando registrado!"):
+    """Tira o relógio/spinner do botão do Telegram imediatamente e exibe pop-up."""
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            json={"callback_query_id": cb_id, "text": texto},
+            timeout=5
+        )
+    except Exception:
+        pass
+
+def atualizar_botoes_mensagem(cb, texto_status):
+    """Atualiza a mensagem no Telegram para desativar o botão e mostrar status final."""
+    try:
+        if "message" in cb:
+            chat_id = cb["message"]["chat"]["id"]
+            msg_id = cb["message"]["message_id"]
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageReplyMarkup",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": msg_id,
+                    "reply_markup": {
+                        "inline_keyboard": [[
+                            {"text": texto_status, "callback_data": "noop"}
+                        ]]
+                    }
+                },
+                timeout=5
+            )
+    except Exception:
+        pass
+
+def interpretar_e_aplicar_sugestao_admin(linha_idx, texto_sugestao):
+    """
+    Usa o Gemini 3.8 Flash para interpretar o pedido do Admin (ex: 'muda o preço para 49,90',
+    'coloca cupom PROMO', 'tira essa oferta', etc.) e aplica as mudanças diretamente na planilha.
+    """
+    try:
+        linha_atual = planilha.row_values(linha_idx)
+        prod_atual = linha_atual[0] if len(linha_atual) > 0 else ""
+        antigo_atual = linha_atual[1] if len(linha_atual) > 1 else ""
+        novo_atual = linha_atual[2] if len(linha_atual) > 2 else ""
+        cupom_atual = linha_atual[6] if len(linha_atual) > 6 else ""
+
+        prompt = f"""
+        O administrador do canal de ofertas pediu uma alteração nesta oferta (Linha {linha_idx}):
+        Mensagem do Admin: "{texto_sugestao}"
+
+        Dados atuais da oferta na planilha:
+        - Produto: {prod_atual}
+        - Preço Antigo: {antigo_atual}
+        - Preço Novo: {novo_atual}
+        - Cupom: {cupom_atual}
+
+        Retorne APENAS um JSON válido com os campos que devem ser alterados (ou null se não for para alterar):
+        {{
+            "novo_produto": "Novo nome limpo do produto ou null",
+            "novo_preco_antigo": "Novo preco antigo formatado ou null (apenas números e vírgula, ex: 149,90)",
+            "novo_preco_novo": "Novo preco promocional formatado ou null (apenas números e vírgula, ex: 99,90)",
+            "novo_cupom": "Novo cupom ou null",
+            "descartar": false,
+            "resumo_mudancas": "Uma frase curta e objetiva em português confirmando o que foi alterado"
+        }}
+        """
+        resp = cliente_gemini.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+        dados = json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+
+        if dados.get("descartar"):
+            planilha.update_cell(linha_idx, COL_STATUS_TG, "Descartado")
+            planilha.update_cell(linha_idx, COL_STATUS_INSTA, "Descartado")
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Linha {linha_idx} descartada conforme seu pedido!"}
+            )
+            return
+
+        mudou = False
+        if dados.get("novo_produto"):
+            planilha.update_cell(linha_idx, COL_PRODUTO, str(dados["novo_produto"]).strip())
+            mudou = True
+        if dados.get("novo_preco_antigo"):
+            planilha.update_cell(linha_idx, COL_PRECO_ANTIGO, str(dados["novo_preco_antigo"]).strip())
+            mudou = True
+        if dados.get("novo_preco_novo"):
+            planilha.update_cell(linha_idx, COL_PRECO_NOVO, str(dados["novo_preco_novo"]).strip())
+            mudou = True
+        if dados.get("novo_cupom") is not None:
+            planilha.update_cell(linha_idx, COL_CUPOM, str(dados["novo_cupom"]).strip().upper())
+            mudou = True
+
+        # Reseta o status para que Telegram e Instagram gerem as novas prévias corrigidas
+        planilha.update_cell(linha_idx, COL_STATUS_TG, "")
+        planilha.update_cell(linha_idx, COL_STATUS_INSTA, "Aguardando Geracao")
+
+        msg_feedback = dados.get("resumo_mudancas") or "Valores atualizados na planilha."
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": ADMIN_CHAT_ID, "text": f"✏️ Linha {linha_idx} atualizada!\n{msg_feedback}\n\n🔄 As prévias serão recriadas automaticamente com os novos dados."}
+        )
+    except Exception as e:
+        print(f"⚠️ Erro ao interpretar sugestão: {e}")
+        planilha.update_cell(linha_idx, COL_STATUS_INSTA, f"Regerar|{texto_sugestao}")
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": ADMIN_CHAT_ID, "text": f"🔄 Pedido registrado para refazer a Linha {linha_idx}..."}
+        )
+
 def verificar_respostas_do_admin():
     """
-    Processa cliques de aprovação tanto do Canal do Telegram (aprovar_tg_ / rejeitar_tg_)
-    quanto do Instagram (aprovar_ / rejeitar_ / replies) para nunca perder updates na fila.
+    Processa cliques de aprovação tanto do Canal do Telegram quanto do Instagram,
+    responde imediatamente ao callback do Telegram para parar o spinner e atualiza botões.
     """
     try:
         resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates", timeout=10).json()
@@ -227,41 +339,64 @@ def verificar_respostas_do_admin():
             maior_id = max(maior_id, up["update_id"])
             if "callback_query" in up:
                 cb = up["callback_query"]
-                data = cb.get("data", "")
+                data = str(cb.get("data", "")).strip()
+                cb_id = cb.get("id")
 
-                # Cliques de aprovação do Canal do Telegram
-                if data.startswith("aprovar_tg_"):
-                    linha = int(data.split("_")[2])
+                match_linha = re.search(r'(\d+)$', data)
+                if not match_linha:
+                    responder_callback(cb_id, "Comando concluído")
+                    continue
+                linha = int(match_linha.group(1))
+
+                # 1. Cliques do Canal do Telegram
+                if "aprovar_tg" in data:
+                    responder_callback(cb_id, "🚀 Aprovado! Publicando no canal...")
+                    atualizar_botoes_mensagem(cb, "✅ PUBLICADO NO CANAL")
                     planilha.update_cell(linha, COL_STATUS_TG, "Aprovado")
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"✅ Linha {linha} APROVADA para o Canal! Publicando..."})
-                elif data.startswith("rejeitar_tg_"):
-                    linha = int(data.split("_")[2])
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        data={"chat_id": ADMIN_CHAT_ID, "text": f"🚀 Linha {linha} APROVADA para o Canal! Iniciando publicação imediata..."}
+                    )
+                elif "rejeitar_tg" in data:
+                    responder_callback(cb_id, "❌ Descartado do canal!")
+                    atualizar_botoes_mensagem(cb, "❌ DESCARTADO DO CANAL")
                     planilha.update_cell(linha, COL_STATUS_TG, "Descartado")
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Linha {linha} DESCARTADA do Canal!"})
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Linha {linha} DESCARTADA do Canal!"}
+                    )
 
-                # Cliques de aprovação do Instagram (preserva sincronia com insta_manager.py)
-                elif data.startswith("aprovar_"):
-                    linha = int(data.split("_")[1])
+                # 2. Cliques do Instagram
+                elif "aprovar" in data:
+                    responder_callback(cb_id, "✅ Aprovado para o Instagram!")
+                    atualizar_botoes_mensagem(cb, "✅ APROVADO PARA INSTAGRAM")
                     planilha.update_cell(linha, COL_STATUS_INSTA, "Aprovado")
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"✅ Linha {linha} (Instagram) APROVADA!"})
-                elif data.startswith("rejeitar_"):
-                    linha = int(data.split("_")[1])
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        data={"chat_id": ADMIN_CHAT_ID, "text": f"✅ Linha {linha} (Instagram) APROVADA!"}
+                    )
+                elif "rejeitar" in data:
+                    responder_callback(cb_id, "❌ Descartado do Instagram!")
+                    atualizar_botoes_mensagem(cb, "❌ DESCARTADO DO INSTAGRAM")
                     planilha.update_cell(linha, COL_STATUS_INSTA, "Descartado")
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Linha {linha} (Instagram) DESCARTADA!"})
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Linha {linha} (Instagram) DESCARTADA!"}
+                    )
 
             elif "message" in up and "reply_to_message" in up["message"]:
                 msg = up["message"]
                 caption_original = msg["reply_to_message"].get("caption", "") or msg["reply_to_message"].get("text", "")
-                match = re.search(r"Linha (\d+)", caption_original)
+                match = re.search(r"Linha\s*(\d+)", caption_original)
                 if match and msg.get("text"):
                     linha = int(match.group(1))
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"🔄 Pedido recebido para refazer a Linha {linha}..."})
-                    planilha.update_cell(linha, COL_STATUS_INSTA, f"Regerar|{msg['text']}")
+                    print(f"📩 Sugestão do Admin recebida para Linha {linha}: {msg['text']}")
+                    interpretar_e_aplicar_sugestao_admin(linha, msg['text'])
 
         if maior_id > 0:
             requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={maior_id + 1}", timeout=5)
     except Exception as e:
-        print(f"⚠️ Aviso ao checar respostas do Admin: {e}")
+        print(f"⚠️ Erro ao checar respostas do Admin: {e}")
 
 # ==========================================
 # 5. EXECUÇÃO PRINCIPAL
