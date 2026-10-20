@@ -364,8 +364,69 @@ def consultar_pagina_amazon(asin):
     return info
 
 # ==========================================
-# 6. EXTRAÇÃO E VALIDAÇÃO COM IA (GEMINI)
+# 6. EXTRAÇÃO E VALIDAÇÃO (GEMINI + FALLBACK)
 # ==========================================
+def extrair_dados_fallback(texto_post, info_amazon):
+    """
+    Extrator determinístico via Regex + dados da Amazon caso a API do Gemini
+    sofra rate-limit ou indisponibilidade temporária.
+    """
+    # 1. Nome do Produto
+    titulo = (info_amazon.get("titulo_amazon") or "").strip()
+    if not titulo:
+        linhas = [l.strip() for l in texto_post.splitlines() if l.strip()]
+        for l in linhas:
+            l_limpa = re.sub(r'https?://\S+', '', l).strip()
+            if len(l_limpa) >= 12 and not any(g in l_limpa.upper() for g in ['CORRE', 'MENOR PREÇO', 'RÁPIDO', 'CUPOM', 'LINK', 'R$']):
+                titulo = l_limpa
+                break
+        if not titulo and linhas:
+            titulo = re.sub(r'https?://\S+', '', linhas[0]).strip()
+    titulo = titulo[:55].strip()
+
+    # 2. Preços (do texto do post e da página da Amazon)
+    matches_precos = re.findall(r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)', texto_post, re.IGNORECASE)
+    valores = [preco_para_float(m) for m in matches_precos if preco_para_float(m) > 0]
+
+    p_novo_amz = preco_para_float(info_amazon.get("preco_atual_amz"))
+    p_antigo_amz = preco_para_float(info_amazon.get("preco_antigo_amz"))
+
+    preco_novo_val = 0.0
+    preco_antigo_val = 0.0
+
+    if len(valores) >= 2:
+        preco_antigo_val = max(valores[:2])
+        preco_novo_val = min(valores[:2])
+    elif len(valores) == 1:
+        preco_novo_val = valores[0]
+        if p_antigo_amz > preco_novo_val:
+            preco_antigo_val = p_antigo_amz
+    elif p_novo_amz > 0:
+        preco_novo_val = p_novo_amz
+        preco_antigo_val = p_antigo_amz
+
+    # 3. Cupom
+    cupom = ""
+    match_cupom = re.search(r'cupom\s*[:\-]?\s*["\'`]*([A-Z0-9]{4,20})["\'`]*', texto_post, re.IGNORECASE)
+    if match_cupom:
+        cupom = limpar_cupom(match_cupom.group(1))
+
+    # 4. Condição
+    condicao = "no PIX" if "pix" in texto_post.lower() else ("à vista" if "vista" in texto_post.lower() else "")
+
+    if not titulo or preco_novo_val <= 0:
+        return None
+
+    return {
+        "valido": True,
+        "produto": titulo,
+        "preco_antigo": float_para_str_planilha(preco_antigo_val),
+        "preco_novo": float_para_str_planilha(preco_novo_val),
+        "cupom": cupom,
+        "condicao": condicao,
+        "postar_insta": "SIM"
+    }
+
 def extrair_dados_com_ia(texto_post, info_amazon):
     contexto_amz = ""
     if info_amazon.get("titulo_amazon"):
@@ -398,17 +459,17 @@ def extrair_dados_com_ia(texto_post, info_amazon):
         "postar_insta": "SIM se for um produto atraente (eletrônicos, eletrodomésticos, casa, cozinha, beleza, games, ferramentas, itens de marca) ou NAO se for item sem apelo visual."
     }}
     """
-    modelos = ['gemini-2.5-flash', 'gemini-2.0-flash']
-    for modelo in modelos:
-        for tentativa in range(2):
-            try:
-                resposta = cliente_gemini.models.generate_content(model=modelo, contents=prompt)
-                texto_limpo = resposta.text.strip().replace('```json', '').replace('```', '').strip()
-                return json.loads(texto_limpo)
-            except Exception as e:
-                print(f"   ⚠️ Aviso Gemini ({modelo}, tentativa {tentativa+1}): {e}")
-                time.sleep(2)
-    return None
+    try:
+        resposta = cliente_gemini.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+        texto_limpo = resposta.text.strip().replace('```json', '').replace('```', '').strip()
+        return json.loads(texto_limpo)
+    except Exception as e:
+        print(f"   ⚠️ Aviso Gemini (usando extração direta de fallback): {e}")
+        return extrair_dados_fallback(texto_post, info_amazon)
 
 # ==========================================
 # 7. EXECUÇÃO PRINCIPAL
@@ -423,8 +484,12 @@ def executar_hunter():
     links_ja_cadastrados = [str(linha.get('Link', '')).strip() for linha in registros_atuais]
     asins_processados = set()
     novas_adicionadas = 0
+    analises_amazon = 0
 
     for oferta in ofertas:
+        if analises_amazon >= 10 or novas_adicionadas >= 3:
+            break
+
         resumo_post = oferta['texto'].splitlines()[0][:65] if oferta['texto'] else "Sem título"
 
         # 1. Pré-filtro instantâneo contra lojas concorrentes
@@ -447,16 +512,17 @@ def executar_hunter():
         if asin_encontrado in asins_processados or link_final_curto in links_ja_cadastrados:
             continue
         asins_processados.add(asin_encontrado)
+        analises_amazon += 1
 
         print(f"\n🔎 Oferta Amazon detectada ({asin_encontrado}): {resumo_post}...")
 
         # 3. Consulta dados oficiais na página da Amazon (título, foto limpa e preço de referência)
         info_amz = consultar_pagina_amazon(asin_encontrado)
 
-        # 4. Extrai e valida dados com o Gemini
+        # 4. Extrai e valida dados com o Gemini (ou Fallback automático)
         dados = extrair_dados_com_ia(oferta['texto'], info_amz)
         if not dados or not dados.get('valido') or not dados.get('preco_novo'):
-            print("   ⏭️ DESCARTADO pela IA: Produto inválido, divergente ou sem preço.")
+            print("   ⏭️ DESCARTADO: Produto inválido, divergente ou sem preço.")
             continue
 
         # Se a Amazon informou preço antigo oficial e o post não tinha, aproveita o preço antigo oficial da Amazon

@@ -132,13 +132,11 @@ def gerar_copy_telegram(produto, preco_antigo, preco_novo, link, cupom, condicao
     🛒 Garanta o seu na Amazon:
     👉 {link}
     """
-    for modelo in ['gemini-2.5-flash', 'gemini-2.0-flash']:
-        try:
-            resp = cliente_gemini.models.generate_content(model=modelo, contents=prompt)
-            return resp.text.strip().replace('**', '')
-        except Exception as e:
-            print(f"   ⚠️ Aviso Gemini ({modelo}): {e}")
-            time.sleep(1)
+    try:
+        resp = cliente_gemini.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+        return resp.text.strip().replace('**', '')
+    except Exception as e:
+        print(f"   ⚠️ Aviso Gemini (usando template padrão): {e}")
 
     # Fallback limpo caso a IA falhe
     texto = f"🚨 PREÇO BAIXO DETECTADO{tag_desconto}\n\n📦 {produto}\n\n"

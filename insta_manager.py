@@ -270,10 +270,17 @@ def gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, texto_nar
     if preco_novo and preco_novo in texto_limpo:
         texto_limpo = texto_limpo.replace(preco_novo, preco_para_fala(preco_novo))
 
-    subprocess.run([
-        "edge-tts", "--voice", "pt-BR-FranciscaNeural",
-        "--text", texto_limpo, "--write-media", caminho_audio
-    ], check=True)
+    try:
+        subprocess.run([
+            "edge-tts", "--voice", "pt-BR-FranciscaNeural",
+            "--text", texto_limpo, "--write-media", caminho_audio
+        ], check=True, timeout=30)
+    except Exception as e:
+        print(f"   ⚠️ Aviso edge-tts ({e}), gerando trilha de áudio silenciosa de fallback...")
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", "7", "-q:a", "9", "-acodec", "libmp3lame", caminho_audio
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     subprocess.run([
         "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", caminho_img, "-i", caminho_audio,
@@ -304,13 +311,15 @@ def criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, instr
         "narracao": "Texto muito natural e vibrante (máximo 22 palavras) para locução de vídeo, escrevendo o preço por extenso ({preco_fala}). Chame para o grupo do Telegram na Bio!"
     }}
     """
-    for modelo in ['gemini-2.5-flash', 'gemini-2.0-flash']:
-        try:
-            resp = cliente_gemini.models.generate_content(model=modelo, contents=prompt)
-            return json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
-        except Exception as e:
-            print(f"   ⚠️ Aviso Gemini ({modelo}): {e}")
-            time.sleep(1)
+    try:
+        resp = cliente_gemini.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+        return json.loads(resp.text.strip().replace('```json', '').replace('```', '').strip())
+    except Exception as e:
+        print(f"   ⚠️ Aviso Gemini (usando copy padrão): {e}")
 
     bloco_de = f"❌ De: {preco_antigo}\n" if preco_antigo else ""
     bloco_cupom = f"🎟️ Cupom: {cupom}\n" if cupom else ""
