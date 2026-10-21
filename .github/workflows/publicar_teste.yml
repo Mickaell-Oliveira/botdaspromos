@@ -1,0 +1,42 @@
+name: Publicar Ultima Linha no Instagram (Teste Rapido)
+
+on:
+  workflow_dispatch:
+    inputs:
+      formato:
+        description: 'Formato da Publicação'
+        required: true
+        default: 'FOTO'
+        type: choice
+        options:
+          - FOTO
+          - VIDEO
+
+jobs:
+  publicar-teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID || '5096433671' }}
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
+    steps:
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar o ambiente Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar FFmpeg e Fontes
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Instalar bibliotecas Python
+        run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper Pillow edge-tts
+
+      - name: Executar Publicação da Última Linha
+        run: python publicar_teste_insta.py ${{ inputs.formato }}
