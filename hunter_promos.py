@@ -17,6 +17,20 @@ GEMINI_API_KEY = (os.getenv('GEMINI_API_KEY') or '').strip()
 NOME_DA_PLANILHA = (os.getenv('NOME_DA_PLANILHA') or 'BugdasPromos').strip()
 AMAZON_TAG = (os.getenv('AMAZON_TAG') or 'bugdaspromo07-20').strip()
 DESCONTO_MINIMO_PCT = 20.0
+PRECO_MINIMO_INSTA = 80.0
+
+TERMOS_BLOQUEADOS_INSTA = [
+    'pilha', 'bateria', 'cr2032', 'alcalina', 'papel higiênico', 'papel higienico',
+    'sabão', 'sabao', 'amaciante', 'detergente', 'desinfetante', 'esponja',
+    'fralda', 'lenço umedecido', 'lenco umedecido', 'absorvente', 'desodorante',
+    'shampoo', 'condicionador', 'sabonete', 'pasta de dente', 'creme dental',
+    'ração', 'racao', 'areia sanitária', 'tapete higiênico', 'antipulgas',
+    'cápsula', 'capsula', 'ômega', 'omega', 'óleo de chia', 'vitamina',
+    'cabo usb', 'cabo hdmi', 'película', 'pelicula', 'capinha', 'adaptador',
+    'cartucho', 'toner', 'papel a4', 'resma', 'caneta', 'lápis',
+    'lâmpada', 'lampada', 'fita isolante', 'fita dupla face', 'extensão',
+    'cueca', 'meia ', 'meias ', 'calcinha'
+]
 
 CANAIS_FONTE = [
     'pechinchou',
@@ -410,6 +424,19 @@ def consultar_pagina_amazon(asin):
 # ==========================================
 # 6. EXTRAÇÃO EM PYTHON PRIMEIRO + IA EM LOTE
 # ==========================================
+def avaliar_vitrine_insta(titulo, preco_novo_val):
+    """
+    Seleciona para a vitrine do Instagram APENAS produtos de desejo com ticket >= R$ 80,00,
+    bloqueando consumíveis, pilhas, cabos simples, higiene, limpeza e miudezas.
+    """
+    if not preco_novo_val or preco_novo_val < PRECO_MINIMO_INSTA:
+        return "NAO"
+    t_lower = str(titulo).lower()
+    for termo in TERMOS_BLOQUEADOS_INSTA:
+        if termo in t_lower:
+            return "NAO"
+    return "SIM"
+
 def extrair_dados_python(texto_post, info_amazon):
     """
     Extrai título, preços, desconto e cupom 100% em Python (0 chamadas de IA)
@@ -491,7 +518,7 @@ def extrair_dados_python(texto_post, info_amazon):
         "preco_novo": float_para_str_planilha(preco_novo_val),
         "cupom": cupom,
         "condicao": condicao,
-        "postar_insta": "SIM"
+        "postar_insta": avaliar_vitrine_insta(titulo, preco_novo_val)
     }
 
 def refinar_lote_com_ia(ofertas_aprovadas):
@@ -513,7 +540,8 @@ def refinar_lote_com_ia(ofertas_aprovadas):
         })
 
     prompt = f"""
-    Refine os nomes comerciais desta lista de produtos aprovados da Amazon Brasil (máximo 52 caracteres cada, limpo e atraente) e defina se tem apelo para vitrine do Instagram ("SIM" ou "NAO").
+    Refine os nomes comerciais desta lista de produtos aprovados da Amazon Brasil (máximo 52 caracteres cada, limpo e atraente).
+    Para o campo "postar_insta", retorne "SIM" SOMENTE se o produto custar a partir de R$ 80,00 E for um item de alto desejo/interesse para vitrine (Eletrônicos, Eletrodomésticos, Eletroportáteis, Gamer, Hardware, Casa/Cozinha moderna, Áudio, TV, Smartphones). Retorne "NAO" para consumíveis, baterias/pilhas, cabos, itens básicos de mercado/limpeza/higiene ou produtos baratos.
     Lista: {json.dumps(itens_prompt, ensure_ascii=False)}
 
     Retorne APENAS um JSON válido no formato de lista:
@@ -538,7 +566,11 @@ def refinar_lote_com_ia(ofertas_aprovadas):
                     if isinstance(idx, int) and 0 <= idx < len(ofertas_aprovadas):
                         if ref.get("produto"):
                             ofertas_aprovadas[idx]["dados"]["produto"] = limpar_titulo_produto(ref["produto"])
-                        if ref.get("postar_insta") in ("SIM", "NAO"):
+                        p_val = preco_para_float(ofertas_aprovadas[idx]["dados"]["preco_novo"])
+                        decisao_py = avaliar_vitrine_insta(ofertas_aprovadas[idx]["dados"]["produto"], p_val)
+                        if decisao_py == "NAO":
+                            ofertas_aprovadas[idx]["dados"]["postar_insta"] = "NAO"
+                        elif ref.get("postar_insta") in ("SIM", "NAO"):
                             ofertas_aprovadas[idx]["dados"]["postar_insta"] = ref["postar_insta"]
             print(f"   ✨ Lote de {len(ofertas_aprovadas)} oferta(s) refinado com 1 única chamada ({modelo})!")
             return ofertas_aprovadas
@@ -556,7 +588,7 @@ def executar_hunter():
     ofertas = buscar_ofertas_telegram()
     print(f"📦 Total de mensagens brutas coletadas nos canais: {len(ofertas)}")
 
-    registros_atuais = planilha.get_all_records()
+    registros_atuais = planilha.get_all_records(numericise_ignore=['all'])
     produtos_ja_cadastrados = [str(linha.get('Produto', '')).lower() for linha in registros_atuais]
     links_ja_cadastrados = [str(linha.get('Link', '')).strip() for linha in registros_atuais]
     asins_processados = set()

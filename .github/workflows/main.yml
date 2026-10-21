@@ -19,6 +19,8 @@ jobs:
       ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID || '5096433671' }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || '@OBugdasPromos' }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
     steps:
       - name: Baixar arquivos do repositório
         uses: actions/checkout@v4

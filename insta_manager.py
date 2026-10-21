@@ -17,7 +17,32 @@ GEMINI_API_KEY = (os.getenv('GEMINI_API_KEY') or '').strip()
 NOME_DA_PLANILHA = (os.getenv('NOME_DA_PLANILHA') or 'BugdasPromos').strip()
 TELEGRAM_TOKEN = (os.getenv('TELEGRAM_TOKEN') or '').strip()
 ADMIN_CHAT_ID = (os.getenv('ADMIN_CHAT_ID') or '5096433671').strip()
+IG_ACCESS_TOKEN = (os.getenv('IG_ACCESS_TOKEN') or '').strip()
+IG_USER_ID = (os.getenv('IG_USER_ID') or '').strip()
 DESCONTO_MINIMO_PCT = 20.0
+PRECO_MINIMO_INSTA = 80.0
+
+TERMOS_BLOQUEADOS_INSTA = [
+    'pilha', 'bateria cr', 'cr2032', 'aa ', 'aaa ', 'cartela', 'papel higienico', 'papel higiênico',
+    'sabonete', 'shampoo', 'condicionador', 'desodorante', 'creme dental', 'pasta de dente',
+    'escova de dente', 'fio dental', 'absorvente', 'fralda', 'lenço umedecido', 'lenco umedecido',
+    'detergente', 'sabao', 'sabão', 'amaciante', 'desinfetante', 'agua sanitaria', 'água sanitária',
+    'esponja', 'pano de prato', 'saco de lixo', 'ração', 'racao', 'petisco', 'areia higienica',
+    'cabo usb', 'pelicula', 'película', 'capinha', 'adaptador', 'lampada', 'lâmpada', 'fita isolante',
+    'extensao', 'extensão', 'filtro de linha', 'tomada', 'parafuso', 'prego', 'cola ', 'caderno',
+    'caneta', 'lapis', 'lápis', 'borracha', 'papel sulfite', 'cueca', 'calcinha', 'meia ', 'meias ',
+    'biscoito', 'bolacha', 'chocolate', 'cafe ', 'café ', 'azeite', 'leite', 'macarrao', 'macarrão',
+    'arroz', 'feijao', 'feijão', 'suplemento', 'vitamina'
+]
+
+def produto_elegivel_vitrine_insta(titulo, preco_novo_val):
+    if not preco_novo_val or preco_novo_val < PRECO_MINIMO_INSTA:
+        return False, f"Ticket abaixo de R$ {PRECO_MINIMO_INSTA:.0f}"
+    t_lower = str(titulo).lower()
+    for termo in TERMOS_BLOQUEADOS_INSTA:
+        if termo in t_lower:
+            return False, f"Categoria consumível/básica ({termo.strip()})"
+    return True, "OK"
 
 cliente_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else genai.Client()
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0'}
@@ -361,7 +386,187 @@ def enviar_para_aprovacao_admin(indice_linha, formato, caminho_midia, legenda, r
         return resp.get("result", {}).get("message_id")
 
 # ==========================================
-# 5. LEITURA DE CLIQUES E PEDIDOS DE EDIÇÃO
+# 5. PUBLICAÇÃO NA API OFICIAL DA META (INSTAGRAM GRAPH API)
+# ==========================================
+def obter_url_midia_telegram(msg_telegram, formato):
+    """
+    Recupera a URL temporária direta do arquivo já enviado ao Telegram na prévia,
+    permitindo que a API da Meta baixe a Foto ou Reels diretamente sem recriar do zero.
+    """
+    try:
+        if not msg_telegram:
+            return None
+        file_id = None
+        if formato == "VIDEO" and "video" in msg_telegram:
+            file_id = msg_telegram["video"].get("file_id")
+        elif "photo" in msg_telegram and msg_telegram["photo"]:
+            file_id = msg_telegram["photo"][-1].get("file_id")
+
+        if not file_id:
+            return None
+
+        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}", timeout=10).json()
+        file_path = r.get("result", {}).get("file_path")
+        if file_path:
+            return f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    except Exception as e:
+        print(f"⚠️ Aviso ao obter mídia do Telegram: {e}")
+    return None
+
+def upload_midia_publica_temporaria(caminho_arquivo):
+    """
+    Faz upload temporário do arquivo local para gerar uma URL pública direta
+    caso a mídia precise ser regerada localmente para a Graph API da Meta.
+    """
+    try:
+        with open(caminho_arquivo, "rb") as f:
+            r = requests.post(
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": f},
+                timeout=30
+            )
+            if r.status_code == 200 and r.text.strip().startswith("http"):
+                return r.text.strip()
+    except Exception:
+        pass
+    try:
+        with open(caminho_arquivo, "rb") as f:
+            r = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": f}, timeout=30).json()
+            url_pagina = r.get("data", {}).get("url", "")
+            if url_pagina:
+                return url_pagina.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+    except Exception:
+        pass
+    return None
+
+def descobrir_ig_user_id(token):
+    """
+    Se IG_USER_ID não estiver configurado nos Secrets, tenta descobrir automaticamente
+    a conta Instagram Business vinculada ao Token (via /me ou /me/accounts).
+    """
+    if IG_USER_ID:
+        return IG_USER_ID
+    try:
+        # 1. Tenta via Facebook Login for Business (/me/accounts -> instagram_business_account)
+        r = requests.get(
+            "https://graph.facebook.com/v21.0/me/accounts",
+            params={"fields": "instagram_business_account{id,username}", "access_token": token},
+            timeout=10
+        ).json()
+        for page in r.get("data", []):
+            ig_acc = page.get("instagram_business_account", {})
+            if ig_acc.get("id"):
+                return str(ig_acc["id"])
+
+        # 2. Tenta via Instagram API with Instagram Login (graph.instagram.com/me)
+        r_ig = requests.get(
+            "https://graph.instagram.com/v21.0/me",
+            params={"fields": "id,user_id,username", "access_token": token},
+            timeout=10
+        ).json()
+        if r_ig.get("user_id") or r_ig.get("id"):
+            return str(r_ig.get("user_id") or r_ig.get("id"))
+    except Exception as e:
+        print(f"⚠️ Erro ao descobrir IG_USER_ID: {e}")
+    return ""
+
+def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
+    """
+    Publica a Foto ou Reels aprovado diretamente no Instagram via Graph API oficial da Meta.
+    """
+    if not IG_ACCESS_TOKEN:
+        return False, "Variável IG_ACCESS_TOKEN ainda não configurada nos Secrets do GitHub."
+
+    ig_id = descobrir_ig_user_id(IG_ACCESS_TOKEN)
+    if not ig_id:
+        return False, "Não foi possível identificar o IG_USER_ID. Adicione IG_USER_ID nos Secrets do GitHub."
+
+    try:
+        vals = planilha.row_values(linha_idx)
+        produto = vals[0] if len(vals) > 0 else ""
+        preco_antigo = formatar_preco(vals[1] if len(vals) > 1 else "")
+        preco_novo = formatar_preco(vals[2] if len(vals) > 2 else "")
+        url_img = vals[4] if len(vals) > 4 else ""
+        cupom = limpar_cupom(vals[6] if len(vals) > 6 else "")
+        condicao = vals[7] if len(vals) > 7 else ""
+        formato = (vals[9] if len(vals) > 9 else "FOTO").strip().upper()
+        legenda = vals[11] if len(vals) > 11 else ""
+
+        _, _, desconto_pct, _ = validar_oferta_para_publicacao(preco_antigo, preco_novo, cupom)
+
+        if not legenda:
+            textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, desconto_pct=desconto_pct)
+            legenda = textos["legenda"]
+
+        # 1. Obtém URL pública da mídia (direto do arquivo da prévia no Telegram ou regerando)
+        media_url = obter_url_midia_telegram(msg_telegram, formato)
+        if not media_url:
+            if formato == "VIDEO":
+                textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, desconto_pct=desconto_pct)
+                caminho = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos["narracao"], desconto_pct=desconto_pct)
+            else:
+                caminho = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct)
+            media_url = upload_midia_publica_temporaria(caminho)
+
+        if not media_url:
+            return False, "Falha ao gerar URL pública da mídia para envio à Meta."
+
+        # Detecta o host da API conforme o tipo de token (EA... = graph.facebook.com | IG... = graph.instagram.com)
+        base_api = "https://graph.instagram.com/v21.0" if IG_ACCESS_TOKEN.startswith("IG") else "https://graph.facebook.com/v21.0"
+
+        # 2. Cria o Container de Mídia na Meta
+        payload_container = {
+            "caption": legenda,
+            "access_token": IG_ACCESS_TOKEN
+        }
+        if formato == "VIDEO":
+            payload_container["media_type"] = "REELS"
+            payload_container["video_url"] = media_url
+            payload_container["share_to_feed"] = "true"
+        else:
+            payload_container["image_url"] = media_url
+
+        r_cont = requests.post(f"{base_api}/{ig_id}/media", data=payload_container, timeout=30).json()
+        if "id" not in r_cont:
+            erro_meta = r_cont.get("error", {}).get("message", str(r_cont))
+            return False, f"Erro ao criar container na Meta: {erro_meta}"
+
+        creation_id = r_cont["id"]
+        print(f"   ⏳ Container Instagram criado ({creation_id}). Aguardando processamento...")
+
+        # 3. Aguarda o processamento do container (especialmente para Reels/Vídeos)
+        for _ in range(12):
+            time.sleep(5)
+            r_status = requests.get(
+                f"{base_api}/{creation_id}",
+                params={"fields": "status_code,status", "access_token": IG_ACCESS_TOKEN},
+                timeout=15
+            ).json()
+            status_code = r_status.get("status_code", "")
+            if status_code == "FINISHED" or (formato == "FOTO" and not status_code):
+                break
+            if status_code == "ERROR":
+                return False, f"A Meta rejeitou o processamento da mídia: {r_status}"
+
+        # 4. Publica efetivamente no Feed/Reels
+        r_pub = requests.post(
+            f"{base_api}/{ig_id}/media_publish",
+            data={"creation_id": creation_id, "access_token": IG_ACCESS_TOKEN},
+            timeout=30
+        ).json()
+
+        if "id" in r_pub:
+            return True, r_pub["id"]
+        else:
+            erro_pub = r_pub.get("error", {}).get("message", str(r_pub))
+            return False, f"Erro ao publicar container: {erro_pub}"
+
+    except Exception as e:
+        return False, str(e)
+
+# ==========================================
+# 6. LEITURA DE CLIQUES E PEDIDOS DE EDIÇÃO
 # ==========================================
 def responder_callback(cb_id, texto="Comando registrado!"):
     try:
@@ -525,10 +730,16 @@ def verificar_respostas_do_admin():
                     planilha.update_cell(linha, COL_STATUS_TG, "Descartado")
                     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Linha {linha} DESCARTADA do Canal!"})
                 elif "aprovar" in data:
-                    responder_callback(cb_id, "✅ Aprovado para o Instagram!")
-                    atualizar_botoes_mensagem(cb, "✅ APROVADO PARA INSTAGRAM")
+                    responder_callback(cb_id, "✅ Aprovado! Publicando no Instagram...")
+                    atualizar_botoes_mensagem(cb, "⏳ PUBLICANDO NO INSTAGRAM...")
                     planilha.update_cell(linha, COL_STATUS_INSTA, "Aprovado")
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"✅ Linha {linha} (Instagram) APROVADA!"})
+                    sucesso_ig, detalhe_ig = publicar_linha_no_instagram(linha, cb.get("message"))
+                    if sucesso_ig:
+                        atualizar_botoes_mensagem(cb, "✅ PUBLICADO NO INSTAGRAM")
+                        planilha.update_cell(linha, COL_STATUS_INSTA, "Publicado")
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Linha {linha} PUBLICADA com sucesso no Instagram! (ID: {detalhe_ig})"})
+                    else:
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": ADMIN_CHAT_ID, "text": f"⚠️ Linha {linha} aprovada, mas houve um aviso ao publicar na API do Instagram:\n{detalhe_ig}"})
                 elif "rejeitar" in data:
                     responder_callback(cb_id, "❌ Descartado do Instagram!")
                     atualizar_botoes_mensagem(cb, "❌ DESCARTADO DO INSTAGRAM")
@@ -562,6 +773,17 @@ def processar_fila_instagram():
         postar_insta = str(linha.get('Postar_Insta', '')).upper()
         status = str(linha.get('Status_Insta', '')).strip()
 
+        # Se uma linha já estava marcada como "Aprovado" na planilha, publica no Instagram
+        if status == "Aprovado" and IG_ACCESS_TOKEN:
+            print(f"🚀 Publicando Linha {indice} aprovada no Instagram...")
+            ok_ig, msg_ig = publicar_linha_no_instagram(indice)
+            if ok_ig:
+                planilha.update_cell(indice, COL_STATUS_INSTA, "Publicado")
+                print(f"   🎉 Linha {indice} publicada no Instagram (ID: {msg_ig})!")
+            else:
+                print(f"   ⚠️ Falha ao publicar Linha {indice}: {msg_ig}")
+            continue
+
         if (postar_insta == "SIM" and status in ["", "Aguardando Geracao"]) or status.startswith("Regerar"):
             produto = str(linha.get('Produto', '')).strip()
             if not produto:
@@ -579,15 +801,20 @@ def processar_fila_instagram():
                 planilha.update_cell(indice, COL_STATUS_INSTA, f"Descartado: {resumo_val}")
                 continue
 
+            # Trava de Curadoria da Vitrine do Instagram (>= R$ 80,00 e sem consumíveis/miudezas)
+            preco_novo_float = preco_para_float(linha.get('Preco_Novo', ''))
+            elegivel_vitrine, motivo_vitrine = produto_elegivel_vitrine_insta(produto, preco_novo_float)
+            if not elegivel_vitrine and not status.startswith("Regerar"):
+                print(f"⏭️ Linha {indice} ({produto}) ignorada na vitrine do Instagram: {motivo_vitrine}")
+                planilha.update_cell(indice, COL_POSTAR_INSTA, "NAO")
+                planilha.update_cell(indice, COL_STATUS_INSTA, f"Ignorado: {motivo_vitrine}")
+                continue
+
             preco_antigo = formatar_preco(str(linha.get('Preco_Antigo', '')))
             preco_novo = formatar_preco(str(linha.get('Preco_Novo', '')))
             condicao = str(linha.get('Condicao', ''))
             url_img = str(linha.get('Imagem_URL', ''))
             formato = str(linha.get('Formato_Insta', 'FOTO')).upper()
-
-            # Trava anti-ticket baixo para Reels (< R$ 45 vira FOTO)
-            if preco_para_float(linha.get('Preco_Novo', '')) < 45.0:
-                formato = "FOTO"
 
             inst_extra = status.split("|")[1] if "|" in status else ""
 
