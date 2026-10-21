@@ -512,8 +512,14 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
         if not media_url:
             return False, "Falha ao gerar URL pública da mídia para envio à Meta."
 
-        # Detecta o host da API conforme o tipo de token (EA... = graph.facebook.com | IG... = graph.instagram.com)
-        base_api = "https://graph.instagram.com/v21.0" if IG_ACCESS_TOKEN.startswith("IG") else "https://graph.facebook.com/v21.0"
+        # Detecta o host da API conforme o tipo de token e tenta o alternativo se necessário
+        hosts_api = [
+            "https://graph.facebook.com/v21.0",
+            "https://graph.instagram.com/v21.0"
+        ] if not IG_ACCESS_TOKEN.startswith("IG") else [
+            "https://graph.instagram.com/v21.0",
+            "https://graph.facebook.com/v21.0"
+        ]
 
         # 2. Cria o Container de Mídia na Meta
         payload_container = {
@@ -527,9 +533,17 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
         else:
             payload_container["image_url"] = media_url
 
-        r_cont = requests.post(f"{base_api}/{ig_id}/media", data=payload_container, timeout=30).json()
-        if "id" not in r_cont:
-            erro_meta = r_cont.get("error", {}).get("message", str(r_cont))
+        r_cont = None
+        base_api = ""
+        for host in hosts_api:
+            resp = requests.post(f"{host}/{ig_id}/media", data=payload_container, timeout=30).json()
+            if "id" in resp:
+                r_cont = resp
+                base_api = host
+                break
+
+        if not r_cont or "id" not in r_cont:
+            erro_meta = r_cont.get("error", {}).get("message", str(r_cont)) if r_cont else "Erro desconhecido"
             return False, f"Erro ao criar container na Meta: {erro_meta}"
 
         creation_id = r_cont["id"]

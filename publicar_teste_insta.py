@@ -87,7 +87,15 @@ def publicar_ultima_linha(forcar_formato=None):
     print(f"🔗 Mídia disponível em: {media_url}")
 
     # 4. Enviar para a Graph API da Meta
-    base_api = "https://graph.instagram.com/v21.0" if IG_ACCESS_TOKEN.startswith("IG") else "https://graph.facebook.com/v21.0"
+    # Tenta publicar tanto no host Facebook Graph quanto Instagram Graph caso haja diferença de escopo do Token
+    hosts_api = [
+        "https://graph.facebook.com/v21.0",
+        "https://graph.instagram.com/v21.0"
+    ] if not IG_ACCESS_TOKEN.startswith("IG") else [
+        "https://graph.instagram.com/v21.0",
+        "https://graph.facebook.com/v21.0"
+    ]
+
     payload = {
         "caption": legenda,
         "access_token": IG_ACCESS_TOKEN
@@ -100,9 +108,21 @@ def publicar_ultima_linha(forcar_formato=None):
         payload["image_url"] = media_url
 
     print("🚀 Criando container de publicação na Meta...")
-    r_cont = requests.post(f"{base_api}/{ig_id}/media", data=payload, timeout=30).json()
-    if "id" not in r_cont:
-        print(f"❌ Erro da Meta ao criar container: {r_cont}")
+    r_cont = None
+    base_usada = ""
+    for host in hosts_api:
+        url_cont = f"{host}/{ig_id}/media"
+        print(f"   Tentando endpoint: {url_cont}...")
+        resp = requests.post(url_cont, data=payload, timeout=30).json()
+        if "id" in resp:
+            r_cont = resp
+            base_usada = host
+            break
+        else:
+            print(f"   ⚠️ Aviso ({host}): {resp.get('error', {}).get('message', resp)}")
+
+    if not r_cont or "id" not in r_cont:
+        print(f"\n❌ Erro da Meta ao criar container: Verifique se o IG_USER_ID é o ID Comercial (1784...) e se o Token tem a permissão 'instagram_content_publish'.")
         return
 
     creation_id = r_cont["id"]
@@ -112,7 +132,7 @@ def publicar_ultima_linha(forcar_formato=None):
     for tentativa in range(15):
         time.sleep(5)
         r_status = requests.get(
-            f"{base_api}/{creation_id}",
+            f"{base_usada}/{creation_id}",
             params={"fields": "status_code,status", "access_token": IG_ACCESS_TOKEN},
             timeout=15
         ).json()
@@ -127,7 +147,7 @@ def publicar_ultima_linha(forcar_formato=None):
     # 5. Publicar!
     print("📢 Publicando container no Instagram...")
     r_pub = requests.post(
-        f"{base_api}/{ig_id}/media_publish",
+        f"{base_usada}/{ig_id}/media_publish",
         data={"creation_id": creation_id, "access_token": IG_ACCESS_TOKEN},
         timeout=30
     ).json()
