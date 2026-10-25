@@ -278,24 +278,24 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
             draw.text((x_linha, y_prod), linha, fill=(20, 35, 90), font=f_prod)
             y_prod += 32
 
-        # 3. Preço Antigo sobre a linha "DE: R$ ________" (X=385, Y=808)
+        # 3. Preço Antigo sobre a linha "DE: R$ ________" (X centralizado na linha tracejada, Y=824)
         val_antigo_num = preco_antigo.replace("R$", "").strip() if preco_antigo else ""
         if val_antigo_num:
             f_antigo = carregar_fonte(40, True)
             bbox_ant = draw.textbbox((0, 0), val_antigo_num, font=f_antigo)
-            x_ant = 385
-            y_ant = offset_y_template + 806
+            x_ant = 355 + (175 - (bbox_ant[2] - bbox_ant[0])) / 2
+            y_ant = offset_y_template + 824
             draw.text((x_ant + 2, y_ant + 2), val_antigo_num, fill=(10, 25, 80), font=f_antigo)
             draw.text((x_ant, y_ant), val_antigo_num, fill=(255, 230, 230), font=f_antigo)
             meio_y = y_ant + (bbox_ant[3] - bbox_ant[1]) / 2 + 5
             draw.line([(x_ant - 5, meio_y), (x_ant + (bbox_ant[2] - bbox_ant[0]) + 5, meio_y)], fill=(255, 70, 70), width=4)
 
-        # 4. Preço Novo em destaque acima da barra amarela ao lado de "POR: R$" (X=585..845, Y=852)
+        # 4. Preço Novo em destaque acima da barra amarela ao lado de "POR: R$" (X=625, Y=868)
         val_novo_num = preco_novo.replace("R$", "").strip()
-        tamanho_fonte_novo = 78 if len(val_novo_num) <= 6 else (66 if len(val_novo_num) <= 8 else 56)
+        tamanho_fonte_novo = 76 if len(val_novo_num) <= 6 else (66 if len(val_novo_num) <= 8 else 56)
         f_novo = carregar_fonte(tamanho_fonte_novo, True)
-        x_novo = 585
-        y_novo = offset_y_template + (848 if tamanho_fonte_novo >= 75 else 858)
+        x_novo = 625
+        y_novo = offset_y_template + (864 if tamanho_fonte_novo >= 74 else 874)
         # Sombra escura para dar o mesmo efeito 3D do template
         draw.text((x_novo + 4, y_novo + 4), val_novo_num, fill=(10, 25, 80), font=f_novo)
         draw.text((x_novo, y_novo), val_novo_num, fill=(255, 205, 0), font=f_novo)
@@ -664,7 +664,7 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
         url_img = vals[4] if len(vals) > 4 else ""
         cupom = limpar_cupom(vals[6] if len(vals) > 6 else "")
         condicao = vals[7] if len(vals) > 7 else ""
-        formato = (vals[9] if len(vals) > 9 else "FOTO").strip().upper()
+        formato = "FOTO"
         legenda = vals[11] if len(vals) > 11 else ""
 
         _, _, desconto_pct, _ = validar_oferta_para_publicacao(preco_antigo, preco_novo, cupom)
@@ -674,13 +674,9 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
             legenda = textos["legenda"]
 
         # 1. Obtém URL pública da mídia (direto do arquivo da prévia no Telegram ou regerando)
-        media_url = obter_url_midia_telegram(msg_telegram, formato)
+        media_url = obter_url_midia_telegram(msg_telegram, "FOTO")
         if not media_url:
-            if formato == "VIDEO":
-                textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, desconto_pct=desconto_pct)
-                caminho = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos["narracao"], desconto_pct=desconto_pct)
-            else:
-                caminho = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct)
+            caminho = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct)
             media_url = upload_midia_publica_temporaria(caminho)
 
         if not media_url:
@@ -1002,21 +998,18 @@ def processar_fila_instagram():
             preco_novo = formatar_preco(str(linha.get('Preco_Novo', '')))
             condicao = str(linha.get('Condicao', ''))
             url_img = str(linha.get('Imagem_URL', ''))
-            formato = str(linha.get('Formato_Insta', 'FOTO')).upper()
+            formato = "FOTO"
 
             inst_extra = status.split("|")[1] if "|" in status else ""
 
             try:
-                print(f"🎬 Gerando criativo ({formato}) da linha {indice}: {produto} ({resumo_val})")
+                print(f"🎬 Gerando criativo (FOTO) da linha {indice}: {produto} ({resumo_val})")
                 textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom_limpo, condicao, inst_extra, desconto_pct=desconto_pct)
                 legenda = textos['legenda']
 
-                if formato == "VIDEO":
-                    caminho_midia = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom_limpo, url_img, textos['narracao'], desconto_pct=desconto_pct)
-                else:
-                    caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom_limpo, url_img, formato="FOTO", desconto_pct=desconto_pct)
+                caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom_limpo, url_img, formato="FOTO", desconto_pct=desconto_pct)
 
-                msg_id = enviar_para_aprovacao_admin(indice, formato, caminho_midia, legenda, resumo_val)
+                msg_id = enviar_para_aprovacao_admin(indice, "FOTO", caminho_midia, legenda, resumo_val)
                 if msg_id:
                     planilha.update_cell(indice, COL_STATUS_INSTA, "Em Aprovacao")
                     planilha.update_cell(indice, COL_LEGENDA_INSTA, legenda)

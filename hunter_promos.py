@@ -740,13 +740,9 @@ def executar_hunter():
         status_insta = ""
 
         if vai_pro_insta == "SIM":
-            formatos_anteriores = [str(l.get('Formato_Insta', '')).upper() for l in registros_atuais if l.get('Formato_Insta')]
-            ultimo_formato = formatos_anteriores[-1] if formatos_anteriores else "VIDEO"
-
-            formato_escolhido = "FOTO" if ultimo_formato == "VIDEO" else "VIDEO"
+            formato_escolhido = "FOTO"
             status_insta = "Aguardando Geracao"
-            registros_atuais.append({'Formato_Insta': formato_escolhido})
-            print(f"   📸 Selecionado para o Instagram no formato: {formato_escolhido}")
+            print(f"   📸 Selecionado para o Instagram no formato: FOTO")
 
         nova_linha = [
             nome_produto,                  # Coluna A: Produto

@@ -2,15 +2,6 @@ name: Publicar Ultima Linha no Instagram (Teste Rapido)
 
 on:
   workflow_dispatch:
-    inputs:
-      formato:
-        description: 'Formato da Publicação'
-        required: true
-        default: 'FOTO'
-        type: choice
-        options:
-          - FOTO
-          - VIDEO
 
 jobs:
   publicar-teste:
@@ -32,11 +23,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Verificar FFmpeg (Já pré-instalado no Ubuntu do GitHub)
-        run: which ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core)
-
       - name: Instalar bibliotecas Python
-        run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper Pillow edge-tts
+        run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper Pillow
 
-      - name: Executar Publicação da Última Linha
-        run: python publicar_teste_insta.py ${{ inputs.formato }}
+      - name: Executar Publicação da Última Linha (FOTO)
+        run: python publicar_teste_insta.py FOTO

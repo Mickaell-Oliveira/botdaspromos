@@ -30,11 +30,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Verificar FFmpeg (Já pré-instalado no Ubuntu do GitHub)
-        run: which ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core)
-
       - name: Instalar bibliotecas Python
-        run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper Pillow edge-tts
+        run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper Pillow
 
       - name: 1. Caçar Novas Ofertas da Amazon (Hunter)
         continue-on-error: true
@@ -44,7 +41,7 @@ jobs:
         continue-on-error: true
         run: python bot_promos_sheets.py
 
-      - name: 3. Gerar Fotos/Reels e Checar Aprovações (Instagram Manager)
+      - name: 3. Gerar Fotos e Checar Aprovações (Instagram Manager)
         continue-on-error: true
         run: |
           python -c "p='insta_manager.py'; txt=open(p).read().replace('\u00a0',' ').replace('\t','    '); open(p,'w').write(txt)"
