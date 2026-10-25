@@ -424,12 +424,60 @@ def consultar_pagina_amazon(asin):
 # ==========================================
 # 6. EXTRAÇÃO EM PYTHON PRIMEIRO + IA EM LOTE
 # ==========================================
+PISOS_CATEGORIA_PRECO = [
+    (["ar condicionado", "ar-condicionado", "split inverter"], 1100.0),
+    (["geladeira", "refrigerador", "freezer", "lava e seca", "lava-loucas", "lava louças"], 1100.0),
+    (["lavadora de roupas", "maquina de lavar", "máquina de lavar", "fogao 4 bocas", "fogão 4 bocas", "fogao 5 bocas", "fogão 5 bocas"], 700.0),
+    (["smart tv", "televisao", "televisão", "tv 50", "tv 55", "tv 65", "tv 43", "tv 32"], 650.0),
+    (["notebook", "macbook", "playstation 5", "ps5", "xbox series", "nintendo switch"], 1200.0),
+    (["iphone", "galaxy s2", "galaxy s3", "smartphone", "celular"], 550.0),
+    (["placa de video", "placa de vídeo", "rtx ", "rx 6", "rx 7"], 700.0),
+    (["micro-ondas", "microondas", "forno eletrico", "forno elétrico"], 280.0),
+    (["air fryer", "fritadeira", "aspirador robo", "aspirador robô", "monitor"], 180.0),
+]
+
+TERMOS_ACESSORIO_OU_PECA = [
+    "controle", "capa", "suporte", "filtro", "defletor", "peca", "peça", "cabo",
+    "mangueira", "sensor", "placa fonte", "capacitor", "adesivo", "pelicula", "película",
+    "protetor", "bolsa", "estojo", "case", "fonte carregador", "pilha", "bateria"
+]
+
+def validar_coerencia_produto_preco(titulo, preco_novo_val, p_novo_amz=0.0):
+    """
+    Impede promoções falsas/absurdas (ex: 'Ar Condicionado Split Inverter' por R$ 59,90
+    quando na verdade o preço é de um controle remoto/acessório ou parcela solta).
+    """
+    if not titulo or preco_novo_val <= 0:
+        return False, "Sem título ou preço"
+
+    t_lower = str(titulo).lower()
+
+    # 1. Se a própria página da Amazon retornou um preço atual e o preço extraído do post
+    # é menos de 40% do preço real na Amazon (ex: pegou valor da parcela "10x de R$ 59,90" ou frete), corrige ou descarta!
+    if p_novo_amz > 0:
+        if preco_novo_val < (p_novo_amz * 0.45) and (p_novo_amz - preco_novo_val) > 150.0:
+            return False, f"Preço extraído (R$ {preco_novo_val:.2f}) diverge drasticamente do preço na Amazon (R$ {p_novo_amz:.2f})"
+
+    # 2. Se o título é de um eletrodoméstico/eletrônico caro (sem ser acessório/peça),
+    # verifica se o preço não é absurdo para a categoria:
+    eh_acessorio = any(termo in t_lower for termo in TERMOS_ACESSORIO_OU_PECA)
+    if not eh_acessorio:
+        for palavras_cat, piso_minimo in PISOS_CATEGORIA_PRECO:
+            if any(p in t_lower for p in palavras_cat):
+                if preco_novo_val < piso_minimo:
+                    return False, f"Preço inverossímil para '{titulo[:30]}' (R$ {preco_novo_val:.2f} < mínimo R$ {piso_minimo:.0f})"
+
+    return True, "OK"
+
 def avaliar_vitrine_insta(titulo, preco_novo_val):
     """
     Seleciona para a vitrine do Instagram APENAS produtos de desejo com ticket >= R$ 80,00,
     bloqueando consumíveis, pilhas, cabos simples, higiene, limpeza e miudezas.
     """
     if not preco_novo_val or preco_novo_val < PRECO_MINIMO_INSTA:
+        return "NAO"
+    ok_coerencia, _ = validar_coerencia_produto_preco(titulo, preco_novo_val)
+    if not ok_coerencia:
         return "NAO"
     t_lower = str(titulo).lower()
     for termo in TERMOS_BLOQUEADOS_INSTA:
@@ -455,14 +503,27 @@ def extrair_dados_python(texto_post, info_amazon):
             titulo = re.sub(r'https?://\S+', '', linhas[0]).strip()
     titulo = limpar_titulo_produto(titulo)
 
-    # 2. Extração de Preços do Texto (suporta "R$ 199,90" e "De 299,90 por R$ 199,90")
-    matches_r = re.findall(r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)', texto_post, re.IGNORECASE)
+    # 2. Extração de Preços do Texto (remove antes trechos de parcelamento "10x de R$ 59,90" ou "R$ 50 OFF" para não confundir com o preço final)
+    texto_sem_parcelas = re.sub(
+        r'\d{1,2}\s*x\s*(?:de\s*)?R\$\s*(?:\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)',
+        ' ',
+        texto_post,
+        flags=re.IGNORECASE
+    )
+    texto_sem_parcelas = re.sub(
+        r'R\$\s*(?:\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)\s*(?:off|de\s*desconto)',
+        ' ',
+        texto_sem_parcelas,
+        flags=re.IGNORECASE
+    )
+
+    matches_r = re.findall(r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)', texto_sem_parcelas, re.IGNORECASE)
     valores = [preco_para_float(m) for m in matches_r if preco_para_float(m) > 0]
 
     # Procura padrão "De X por Y" mesmo quando o primeiro não tem R$
     match_de_por = re.search(
         r'de\s*:?\s*(?:R\$\s*)?~?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)~?\s*(?:por|->|➡|👉|\n)+\s*(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+(?:,\d{2})?)',
-        texto_post,
+        texto_sem_parcelas,
         re.IGNORECASE
     )
 
@@ -509,6 +570,12 @@ def extrair_dados_python(texto_post, info_amazon):
     condicao = "no PIX" if "pix" in texto_post.lower() else ("à vista" if "vista" in texto_post.lower() else "")
 
     if not titulo or preco_novo_val <= 0:
+        return None
+
+    # 5. Trava de Veracidade Produto x Preço (barra ex: Ar Condicionado por R$ 59,90 ou divergência grave com a Amazon)
+    coerente, motivo_coerencia = validar_coerencia_produto_preco(titulo, preco_novo_val, p_novo_amz)
+    if not coerente:
+        print(f"   🚫 BLOQUEIO DE VERACIDADE: {motivo_coerencia}")
         return None
 
     return {

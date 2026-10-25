@@ -85,7 +85,7 @@ def limpar_cupom(cupom_raw):
             return ""
     return c
 
-def validar_oferta_para_publicacao(preco_antigo_raw, preco_novo_raw, cupom_raw):
+def validar_oferta_para_publicacao(preco_antigo_raw, preco_novo_raw, cupom_raw, produto_titulo=""):
     """Retorna (valida: bool, resumo_validacao: str, desconto_pct: float, cupom_limpo: str)."""
     p_antigo = preco_para_float(preco_antigo_raw)
     p_novo = preco_para_float(preco_novo_raw)
@@ -93,6 +93,18 @@ def validar_oferta_para_publicacao(preco_antigo_raw, preco_novo_raw, cupom_raw):
 
     if p_novo <= 0:
         return False, "Preço promocional inválido", 0.0, ""
+
+    if produto_titulo:
+        t_lower = str(produto_titulo).lower()
+        eh_acessorio = any(t in t_lower for t in ["controle", "capa", "suporte", "filtro", "defletor", "peca", "peça", "cabo", "mangueira", "sensor", "adesivo", "pelicula", "película", "protetor", "bolsa", "estojo", "case"])
+        if not eh_acessorio:
+            pisos = [
+                (["ar condicionado", "ar-condicionado", "split inverter", "geladeira", "refrigerador", "freezer", "lava e seca", "notebook", "playstation 5", "ps5"], 1100.0),
+                (["lavadora de roupas", "maquina de lavar", "máquina de lavar", "smart tv", "televisao", "televisão", "iphone", "smartphone"], 550.0),
+            ]
+            for palavras_cat, piso in pisos:
+                if any(p in t_lower for p in palavras_cat) and p_novo < piso:
+                    return False, f"Preço inverossímil para o produto (R$ {p_novo:.2f})", 0.0, ""
 
     desconto_pct = 0.0
     if p_antigo > p_novo:
@@ -426,7 +438,8 @@ def processar_planilha():
             valida, resumo_val, desconto_pct, cupom_limpo = validar_oferta_para_publicacao(
                 linha.get('Preco_Antigo', ''),
                 linha.get('Preco_Novo', ''),
-                linha.get('Cupom', '')
+                linha.get('Cupom', ''),
+                produto_titulo=produto
             )
 
             if not valida:

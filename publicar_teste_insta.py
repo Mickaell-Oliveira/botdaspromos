@@ -5,7 +5,11 @@ import time
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
-from insta_manager import desenhar_arte, gerar_reels_mp4, formatar_preco, preco_para_float, criar_textos_insta, upload_midia_publica_temporaria, descobrir_ig_user_id
+from insta_manager import (
+    desenhar_arte, gerar_reels_mp4, formatar_preco, preco_para_float,
+    criar_textos_insta, upload_midia_publica_temporaria, descobrir_ig_user_id,
+    produto_elegivel_vitrine_insta, validar_oferta_para_publicacao
+)
 
 NOME_DA_PLANILHA = (os.getenv('NOME_DA_PLANILHA') or 'BugdasPromos').strip()
 IG_ACCESS_TOKEN = (os.getenv('IG_ACCESS_TOKEN') or '').strip()
@@ -30,20 +34,49 @@ cliente_sheets = gspread.authorize(credenciais)
 planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 
 def publicar_ultima_linha(forcar_formato=None):
-    print("📋 Lendo planilha para pegar a última oferta cadastrada...")
+    print("📋 Lendo planilha para encontrar a última oferta válida e autêntica para o Instagram...")
     registros = planilha.get_all_records(numericise_ignore=['all'])
     if not registros:
         print("❌ Nenhum registro encontrado na planilha.")
         return
 
-    indice_linha = len(registros) + 1  # 1-based index (cabeçalho é linha 1)
-    linha = registros[-1]
+    indice_linha = None
+    linha = None
+    desconto_pct_sel = 0.0
+    cupom_sel = ""
+
+    # Percorre de trás para frente procurando a última oferta autêntica e elegível para a vitrine do Instagram
+    for idx_reverso in range(len(registros) - 1, -1, -1):
+        cand = registros[idx_reverso]
+        num_linha = idx_reverso + 2
+        prod_cand = str(cand.get('Produto', '')).strip()
+        p_novo_cand = preco_para_float(cand.get('Preco_Novo', ''))
+
+        valida, resumo_val, desc_pct, cup_limpo = validar_oferta_para_publicacao(
+            cand.get('Preco_Antigo', ''),
+            cand.get('Preco_Novo', ''),
+            cand.get('Cupom', '')
+        )
+        elegivel, motivo_vitrine = produto_elegivel_vitrine_insta(prod_cand, p_novo_cand)
+
+        if valida and elegivel:
+            indice_linha = num_linha
+            linha = cand
+            desconto_pct_sel = desc_pct
+            cupom_sel = cup_limpo
+            break
+        else:
+            print(f"   ⏭️ Pulando Linha {num_linha} ({prod_cand} - R$ {p_novo_cand:.2f}): {motivo_vitrine if not elegivel else resumo_val}")
+
+    if not linha:
+        print("❌ Nenhuma linha recente passou na validação de veracidade e vitrine (>= R$ 80).")
+        return
 
     produto = str(linha.get('Produto', '')).strip()
     preco_antigo = formatar_preco(str(linha.get('Preco_Antigo', '')))
     preco_novo = formatar_preco(str(linha.get('Preco_Novo', '')))
     url_img = str(linha.get('Imagem_URL', ''))
-    cupom = str(linha.get('Cupom', '')).strip()
+    cupom = cupom_sel
     condicao = str(linha.get('Condicao', '')).strip()
     formato_original = str(linha.get('Formato_Insta', 'FOTO')).upper()
 
@@ -66,15 +99,15 @@ def publicar_ultima_linha(forcar_formato=None):
 
     # 1. Gerar Textos e Legenda
     print("\n📝 Gerando legenda...")
-    textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao)
+    textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, desconto_pct=desconto_pct_sel)
     legenda = textos['legenda']
 
     # 2. Gerar Mídia Local
     print(f"🎨 Gerando mídia ({formato})...")
     if formato == "VIDEO":
-        caminho_midia = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos['narracao'])
+        caminho_midia = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos['narracao'], desconto_pct=desconto_pct_sel)
     else:
-        caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO")
+        caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct_sel)
 
     print(f"✅ Mídia gerada em: {caminho_midia}")
 

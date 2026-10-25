@@ -35,9 +35,42 @@ TERMOS_BLOQUEADOS_INSTA = [
     'arroz', 'feijao', 'feijão', 'suplemento', 'vitamina'
 ]
 
+PISOS_CATEGORIA_PRECO = [
+    (["ar condicionado", "ar-condicionado", "split inverter"], 1100.0),
+    (["geladeira", "refrigerador", "freezer", "lava e seca", "lava-loucas", "lava louças"], 1100.0),
+    (["lavadora de roupas", "maquina de lavar", "máquina de lavar", "fogao 4 bocas", "fogão 4 bocas", "fogao 5 bocas", "fogão 5 bocas"], 700.0),
+    (["smart tv", "televisao", "televisão", "tv 50", "tv 55", "tv 65", "tv 43", "tv 32"], 650.0),
+    (["notebook", "macbook", "playstation 5", "ps5", "xbox series", "nintendo switch"], 1200.0),
+    (["iphone", "galaxy s2", "galaxy s3", "smartphone", "celular"], 550.0),
+    (["placa de video", "placa de vídeo", "rtx ", "rx 6", "rx 7"], 700.0),
+    (["micro-ondas", "microondas", "forno eletrico", "forno elétrico"], 280.0),
+    (["air fryer", "fritadeira", "aspirador robo", "aspirador robô", "monitor"], 180.0),
+]
+
+TERMOS_ACESSORIO_OU_PECA = [
+    "controle", "capa", "suporte", "filtro", "defletor", "peca", "peça", "cabo",
+    "mangueira", "sensor", "placa fonte", "capacitor", "adesivo", "pelicula", "película",
+    "protetor", "bolsa", "estojo", "case", "fonte carregador", "pilha", "bateria"
+]
+
+def validar_coerencia_produto_preco(titulo, preco_novo_val):
+    if not titulo or preco_novo_val <= 0:
+        return False, "Sem título ou preço"
+    t_lower = str(titulo).lower()
+    eh_acessorio = any(termo in t_lower for termo in TERMOS_ACESSORIO_OU_PECA)
+    if not eh_acessorio:
+        for palavras_cat, piso_minimo in PISOS_CATEGORIA_PRECO:
+            if any(p in t_lower for p in palavras_cat):
+                if preco_novo_val < piso_minimo:
+                    return False, f"Preço inverossímil para a categoria (R$ {preco_novo_val:.2f} < R$ {piso_minimo:.0f})"
+    return True, "OK"
+
 def produto_elegivel_vitrine_insta(titulo, preco_novo_val):
     if not preco_novo_val or preco_novo_val < PRECO_MINIMO_INSTA:
         return False, f"Ticket abaixo de R$ {PRECO_MINIMO_INSTA:.0f}"
+    ok_coerencia, motivo_coerencia = validar_coerencia_produto_preco(titulo, preco_novo_val)
+    if not ok_coerencia:
+        return False, motivo_coerencia
     t_lower = str(titulo).lower()
     for termo in TERMOS_BLOQUEADOS_INSTA:
         if termo in t_lower:
@@ -193,6 +226,95 @@ def preco_para_fala(preco_formatado):
 def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=0.0, caminho_saida="post_insta.jpg"):
     largura = 1080
     altura = 1080 if formato == "FOTO" else 1920
+
+    caminho_template = "FotoIG.jpg"
+    if os.path.exists(caminho_template):
+        template_base = Image.open(caminho_template).convert("RGB").resize((1080, 1080), Image.Resampling.LANCZOS)
+        if formato == "FOTO":
+            img = template_base
+            offset_y_template = 0
+        else:
+            # Para VIDEO (1080x1920), centraliza o template 1080x1080 em um fundo azul-escuro harmônico da identidade visual
+            img = Image.new("RGB", (1080, 1920), color=(9, 45, 166))
+            offset_y_template = 420
+            img.paste(template_base, (0, offset_y_template))
+
+        draw = ImageDraw.Draw(img)
+
+        # 1. Foto do Produto dentro do quadro branco (respeitando o mascote na esquerda: X=385..770, Y=350..595)
+        area_prod_x1 = 385
+        area_prod_x2 = 770
+        area_prod_y1 = offset_y_template + 345
+        area_prod_y2 = offset_y_template + 595
+        larg_max_prod = area_prod_x2 - area_prod_x1
+        alt_max_prod = area_prod_y2 - area_prod_y1
+
+        try:
+            resp = requests.get(url_img, headers=HEADERS, timeout=10)
+            if resp.status_code == 200:
+                prod_img = Image.open(BytesIO(resp.content)).convert("RGBA")
+                larg_img, alt_img = prod_img.size
+                if "media-amazon.com" not in str(url_img) and "images-amazon.com" not in str(url_img):
+                    prod_img = prod_img.crop((0, int(alt_img * 0.15), larg_img, alt_img))
+
+                fundo_branco = Image.new("RGBA", prod_img.size, "WHITE")
+                fundo_branco.paste(prod_img, (0, 0), prod_img)
+                prod_img = fundo_branco.convert("RGB")
+
+                prod_img.thumbnail((larg_max_prod, alt_max_prod), Image.Resampling.LANCZOS)
+                px = area_prod_x1 + (larg_max_prod - prod_img.width) // 2
+                py = area_prod_y1 + (alt_max_prod - prod_img.height) // 2
+                img.paste(prod_img, (px, py))
+        except Exception as e:
+            print(f"⚠️ Aviso imagem: {e}")
+
+        # 2. Nome do Produto na base interna do quadro branco (X=380..775, Y=602..690)
+        f_prod = carregar_fonte(25, True)
+        linhas_prod = quebrar_texto(produto, f_prod, 390, draw)[:2]
+        y_prod = offset_y_template + (622 if len(linhas_prod) == 1 else 605)
+        for linha in linhas_prod:
+            bbox = draw.textbbox((0, 0), linha, font=f_prod)
+            x_linha = 380 + (395 - (bbox[2] - bbox[0])) / 2
+            draw.text((x_linha, y_prod), linha, fill=(20, 35, 90), font=f_prod)
+            y_prod += 32
+
+        # 3. Preço Antigo sobre a linha "DE: R$ ________" (X=385, Y=808)
+        val_antigo_num = preco_antigo.replace("R$", "").strip() if preco_antigo else ""
+        if val_antigo_num:
+            f_antigo = carregar_fonte(40, True)
+            bbox_ant = draw.textbbox((0, 0), val_antigo_num, font=f_antigo)
+            x_ant = 385
+            y_ant = offset_y_template + 806
+            draw.text((x_ant + 2, y_ant + 2), val_antigo_num, fill=(10, 25, 80), font=f_antigo)
+            draw.text((x_ant, y_ant), val_antigo_num, fill=(255, 230, 230), font=f_antigo)
+            meio_y = y_ant + (bbox_ant[3] - bbox_ant[1]) / 2 + 5
+            draw.line([(x_ant - 5, meio_y), (x_ant + (bbox_ant[2] - bbox_ant[0]) + 5, meio_y)], fill=(255, 70, 70), width=4)
+
+        # 4. Preço Novo em destaque acima da barra amarela ao lado de "POR: R$" (X=585..845, Y=852)
+        val_novo_num = preco_novo.replace("R$", "").strip()
+        tamanho_fonte_novo = 78 if len(val_novo_num) <= 6 else (66 if len(val_novo_num) <= 8 else 56)
+        f_novo = carregar_fonte(tamanho_fonte_novo, True)
+        x_novo = 585
+        y_novo = offset_y_template + (848 if tamanho_fonte_novo >= 75 else 858)
+        # Sombra escura para dar o mesmo efeito 3D do template
+        draw.text((x_novo + 4, y_novo + 4), val_novo_num, fill=(10, 25, 80), font=f_novo)
+        draw.text((x_novo, y_novo), val_novo_num, fill=(255, 205, 0), font=f_novo)
+
+        # 5. Badge de Cupom ou % OFF no canto superior direito do quadro branco
+        texto_badge = f"CUPOM: {cupom.upper()}" if cupom else (f"-{desconto_pct:.0f}% OFF" if desconto_pct >= DESCONTO_MINIMO_PCT else "")
+        if texto_badge:
+            f_badge = carregar_fonte(24, True)
+            bbox_b = draw.textbbox((0, 0), texto_badge, font=f_badge)
+            larg_b = (bbox_b[2] - bbox_b[0]) + 36
+            x_b2 = 775
+            x_b1 = x_b2 - larg_b
+            y_b1 = offset_y_template + 328
+            y_b2 = y_b1 + 44
+            draw.rounded_rectangle([(x_b1, y_b1), (x_b2, y_b2)], radius=18, fill=(230, 30, 50))
+            draw.text((x_b1 + 18, y_b1 + 9), texto_badge, fill=(255, 255, 255), font=f_badge)
+
+        img.save(caminho_saida, quality=95)
+        return caminho_saida
 
     img = Image.new('RGB', (largura, altura), color=(30, 70, 190))
     draw = ImageDraw.Draw(img)
