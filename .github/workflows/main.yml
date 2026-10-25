@@ -30,8 +30,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar FFmpeg e Fontes (Para Reels e Artes)
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Verificar FFmpeg (Já pré-instalado no Ubuntu do GitHub)
+        run: which ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core)
 
       - name: Instalar bibliotecas Python
         run: pip install gspread google-auth google-genai requests feedparser beautifulsoup4 cloudscraper Pillow edge-tts
