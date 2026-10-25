@@ -416,28 +416,80 @@ def obter_url_midia_telegram(msg_telegram, formato):
 def upload_midia_publica_temporaria(caminho_arquivo):
     """
     Faz upload temporário do arquivo local para gerar uma URL pública direta
-    caso a mídia precise ser regerada localmente para a Graph API da Meta.
+    com Content-Type image/jpeg ou video/mp4 nativo aceito pela Graph API da Meta.
     """
+    eh_video = str(caminho_arquivo).lower().endswith(".mp4")
+    mime_type = "video/mp4" if eh_video else "image/jpeg"
+    nome_arq = os.path.basename(caminho_arquivo)
+
+    # 1. Host primário: CDN Oficial do Telegram (via envio silencioso ao chat Admin -> getFile)
+    if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
+        try:
+            endpoint = "sendVideo" if eh_video else "sendPhoto"
+            campo = "video" if eh_video else "photo"
+            with open(caminho_arquivo, "rb") as f:
+                resp = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{endpoint}",
+                    data={"chat_id": ADMIN_CHAT_ID, "disable_notification": "true"},
+                    files={campo: (nome_arq, f, mime_type)},
+                    timeout=30
+                ).json()
+            msg_res = resp.get("result", {})
+            msg_id_temp = msg_res.get("message_id")
+            file_id = None
+            if eh_video and "video" in msg_res:
+                file_id = msg_res["video"].get("file_id")
+            elif "photo" in msg_res and msg_res["photo"]:
+                file_id = msg_res["photo"][-1].get("file_id")
+
+            if file_id:
+                r_file = requests.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}",
+                    timeout=10
+                ).json()
+                file_path = r_file.get("result", {}).get("file_path")
+                # Apaga a mensagem temporária de upload no chat Admin para não poluir
+                if msg_id_temp:
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
+                        data={"chat_id": ADMIN_CHAT_ID, "message_id": msg_id_temp},
+                        timeout=5
+                    )
+                if file_path:
+                    return f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        except Exception as e:
+            print(f"⚠️ Aviso no upload via Telegram CDN: {e}")
+
+    # 2. Fallback: Litterbox / Catbox (serve image/jpeg e video/mp4 com header correto)
     try:
         with open(caminho_arquivo, "rb") as f:
             r = requests.post(
-                "https://catbox.moe/user/api.php",
-                data={"reqtype": "fileupload"},
-                files={"fileToUpload": f},
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "1h"},
+                files={"fileToUpload": (nome_arq, f, mime_type)},
+                headers=HEADERS,
                 timeout=30
             )
             if r.status_code == 200 and r.text.strip().startswith("http"):
                 return r.text.strip()
     except Exception:
         pass
+
+    # 3. Fallback: Uguu.se (serve image/jpeg direto sem redirecionamento)
     try:
         with open(caminho_arquivo, "rb") as f:
-            r = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": f}, timeout=30).json()
-            url_pagina = r.get("data", {}).get("url", "")
-            if url_pagina:
-                return url_pagina.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            r = requests.post(
+                "https://uguu.se/upload",
+                files={"files[]": (nome_arq, f, mime_type)},
+                headers=HEADERS,
+                timeout=30
+            ).json()
+            files_list = r.get("files", [])
+            if files_list and files_list[0].get("url"):
+                return files_list[0]["url"]
     except Exception:
         pass
+
     return None
 
 def descobrir_ig_user_id(token):
