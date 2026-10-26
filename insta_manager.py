@@ -23,6 +23,7 @@ ELEVENLABS_API_KEY = (os.getenv('ELEVENLABS_API_KEY') or '').strip()
 ELEVENLABS_VOICE_ID = (os.getenv('ELEVENLABS_VOICE_ID') or 'ycxdm1PRMs962FxyyuJ0').strip()
 DESCONTO_MINIMO_PCT = 20.0
 PRECO_MINIMO_INSTA = 80.0
+INTERVALO_MINIMO_FEED_HORAS = 3.0  # Janela de proteção do algoritmo do Instagram (Feed/Reels)
 
 TERMOS_BLOQUEADOS_INSTA = [
     'pilha', 'bateria cr', 'cr2032', 'aa ', 'aaa ', 'cartela', 'papel higienico', 'papel higiênico',
@@ -795,6 +796,83 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
     except Exception as e:
         return False, str(e)
 
+def publicar_story_no_instagram(produto, preco_antigo, preco_novo, cupom, url_img, desconto_pct=0.0):
+    """
+    Publica uma oferta nos Stories do Instagram (formato 9:16 vertical).
+    Ideal para dar vazão a todas as ofertas postadas no Telegram sem poluir nem canibalizar o Feed.
+    """
+    if not IG_ACCESS_TOKEN:
+        return False, "Sem IG_ACCESS_TOKEN configurado"
+
+    ig_id = descobrir_ig_user_id(IG_ACCESS_TOKEN)
+    if not ig_id:
+        return False, "Sem IG_USER_ID identificado"
+
+    try:
+        caminho_story = f"story_{int(time.time())}.jpg"
+        desenhar_arte(
+            produto, preco_antigo, preco_novo, cupom, url_img,
+            formato="FOTO", desconto_pct=desconto_pct, caminho_saida=caminho_story
+        )
+        media_url = upload_midia_publica_temporaria(caminho_story)
+        if not media_url:
+            return False, "Falha no upload da mídia do Story"
+
+        hosts_api = [
+            "https://graph.facebook.com/v21.0",
+            "https://graph.instagram.com/v21.0"
+        ] if not IG_ACCESS_TOKEN.startswith("IG") else [
+            "https://graph.instagram.com/v21.0",
+            "https://graph.facebook.com/v21.0"
+        ]
+
+        payload_story = {
+            "media_type": "STORIES",
+            "image_url": media_url,
+            "access_token": IG_ACCESS_TOKEN
+        }
+
+        r_cont = None
+        base_api = ""
+        for host in hosts_api:
+            resp = requests.post(f"{host}/{ig_id}/media", data=payload_story, timeout=30).json()
+            if "id" in resp:
+                r_cont = resp
+                base_api = host
+                break
+
+        if not r_cont or "id" not in r_cont:
+            erro = r_cont.get("error", {}).get("message", str(r_cont)) if r_cont else "Erro desconhecido"
+            return False, f"Erro ao criar container de Story: {erro}"
+
+        creation_id = r_cont["id"]
+        time.sleep(3)
+
+        r_pub = requests.post(
+            f"{base_api}/{ig_id}/media_publish",
+            data={"creation_id": creation_id, "access_token": IG_ACCESS_TOKEN},
+            timeout=30
+        ).json()
+
+        if "id" in r_pub:
+            print(f"   📸 Story publicado com sucesso no Instagram! (ID: {r_pub['id']})")
+            return True, r_pub["id"]
+        else:
+            return False, r_pub.get("error", {}).get("message", str(r_pub))
+    except Exception as e:
+        return False, str(e)
+
+def obter_horario_ultimo_post_feed(registros):
+    """
+    Verifica há quanto tempo o último post de Feed/Reels foi publicado.
+    Garante que o algoritmo do Instagram tenha pelo menos 3 horas para distribuir a publicação anterior.
+    """
+    for linha in reversed(registros):
+        st = str(linha.get('Status_Insta', '')).strip().lower()
+        if "publicado" in st:
+            return True  # Tem registro de publicação
+    return False
+
 # ==========================================
 # 6. LEITURA DE CLIQUES E PEDIDOS DE EDIÇÃO
 # ==========================================
@@ -1005,10 +1083,22 @@ def processar_fila_instagram():
 
         # Se uma linha já estava marcada como "Aprovado" na planilha, publica no Instagram
         if status == "Aprovado" and IG_ACCESS_TOKEN:
+            # Checa proteção de distribuição do algoritmo: se publicou há menos de 3h, aguarda a próxima janela
+            posts_recentes = [l for l in registros if "publicado em" in str(l.get('Status_Insta', '')).lower()]
+            if posts_recentes:
+                m_tempo = re.search(r'publicado em (\d+)', str(posts_recentes[-1].get('Status_Insta', '')).lower())
+                if m_tempo:
+                    ts_ultimo = int(m_tempo.group(1))
+                    horas_passadas = (time.time() - ts_ultimo) / 3600.0
+                    if horas_passadas < INTERVALO_MINIMO_FEED_HORAS:
+                        espera_min = int((INTERVALO_MINIMO_FEED_HORAS - horas_passadas) * 60)
+                        print(f"   ⏳ Proteção de Engajamento: Último post no Feed foi há {horas_passadas:.1f}h. Aguardando {espera_min} min para não canibalizar a distribuição.")
+                        continue
+
             print(f"🚀 Publicando Linha {indice} aprovada no Instagram...")
             ok_ig, msg_ig = publicar_linha_no_instagram(indice)
             if ok_ig:
-                planilha.update_cell(indice, COL_STATUS_INSTA, "Publicado")
+                planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {int(time.time())}")
                 print(f"   🎉 Linha {indice} publicada no Instagram (ID: {msg_ig})!")
             else:
                 print(f"   ⚠️ Falha ao publicar Linha {indice}: {msg_ig}")
