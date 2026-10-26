@@ -80,12 +80,12 @@ def publicar_ultima_linha(forcar_formato=None):
     condicao = str(linha.get('Condicao', '')).strip()
     formato_original = str(linha.get('Formato_Insta', 'FOTO')).upper()
 
-    formato = "FOTO"
+    formato = (forcar_formato or formato_original or "VIDEO").upper()
 
     print(f"\n🎯 Linha selecionada: Linha {indice_linha}")
     print(f"📦 Produto: {produto}")
     print(f"💰 De: {preco_antigo or '--'} | Por: {preco_novo}")
-    print(f"🖼️ Formato: FOTO")
+    print(f"🖼️ Formato: {formato}")
 
     if not IG_ACCESS_TOKEN:
         print("❌ ERRO: IG_ACCESS_TOKEN não está definido nas variáveis de ambiente.")
@@ -103,8 +103,11 @@ def publicar_ultima_linha(forcar_formato=None):
     legenda = textos['legenda']
 
     # 2. Gerar Mídia Local
-    print("🎨 Gerando mídia (FOTO)...")
-    caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct_sel)
+    print(f"🎨 Gerando mídia ({formato})...")
+    if formato == "VIDEO":
+        caminho_midia = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos['narracao'], desconto_pct=desconto_pct_sel)
+    else:
+        caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct_sel)
 
     print(f"✅ Mídia gerada em: {caminho_midia}")
 

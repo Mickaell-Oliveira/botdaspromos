@@ -19,6 +19,8 @@ TELEGRAM_TOKEN = (os.getenv('TELEGRAM_TOKEN') or '').strip()
 ADMIN_CHAT_ID = (os.getenv('ADMIN_CHAT_ID') or '5096433671').strip()
 IG_ACCESS_TOKEN = (os.getenv('IG_ACCESS_TOKEN') or '').strip()
 IG_USER_ID = (os.getenv('IG_USER_ID') or '').strip()
+ELEVENLABS_API_KEY = (os.getenv('ELEVENLABS_API_KEY') or '').strip()
+ELEVENLABS_VOICE_ID = (os.getenv('ELEVENLABS_VOICE_ID') or 'ycxdm1PRMs962FxyyuJ0').strip()
 DESCONTO_MINIMO_PCT = 20.0
 PRECO_MINIMO_INSTA = 80.0
 
@@ -409,6 +411,58 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
     img.save(caminho_saida, quality=95)
     return caminho_saida
 
+def gerar_audio_narracao(texto_narracao, caminho_audio="locucao.mp3"):
+    """
+    Gera a narração com a voz escolhida do ElevenLabs (Otto / Robô Intimidating)
+    com fallback automático para edge-tts caso a cota do ElevenLabs acabe.
+    """
+    texto_limpo = texto_narracao.replace('"', '').replace("'", "").replace("\n", " ").strip()
+
+    # 1. Tenta gerar via ElevenLabs com a voz do Otto
+    if ELEVENLABS_API_KEY:
+        try:
+            url_el = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+            headers_el = {
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+                "xi-api-key": ELEVENLABS_API_KEY
+            }
+            payload_el = {
+                "text": texto_limpo,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.55,
+                    "similarity_boost": 0.85,
+                    "style": 0.35,
+                    "use_speaker_boost": True
+                }
+            }
+            resp = requests.post(url_el, json=payload_el, headers=headers_el, timeout=30)
+            if resp.status_code == 200 and len(resp.content) > 1000:
+                with open(caminho_audio, "wb") as f:
+                    f.write(resp.content)
+                print("   🎙️ Áudio gerado com sucesso via ElevenLabs (Voz: Otto)!")
+                return caminho_audio
+            else:
+                print(f"   ⚠️ Aviso ElevenLabs ({resp.status_code}): {resp.text[:120]} — usando fallback...")
+        except Exception as e:
+            print(f"   ⚠️ Erro na chamada ElevenLabs: {e} — usando fallback...")
+
+    # 2. Fallback: Edge-TTS neural
+    try:
+        subprocess.run([
+            "edge-tts", "--voice", "pt-BR-FabioNeural",
+            "--text", texto_limpo, "--write-media", caminho_audio
+        ], check=True, timeout=30)
+        return caminho_audio
+    except Exception as e:
+        print(f"   ⚠️ Aviso edge-tts ({e}), gerando áudio silencioso...")
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", "7", "-q:a", "9", "-acodec", "libmp3lame", caminho_audio
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return caminho_audio
+
 def gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, texto_narracao, desconto_pct=0.0):
     caminho_img = "frame_reels.jpg"
     caminho_audio = "locucao.mp3"
@@ -416,25 +470,15 @@ def gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, texto_nar
 
     desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="VIDEO", desconto_pct=desconto_pct, caminho_saida=caminho_img)
 
-    texto_limpo = texto_narracao.replace('"', '').replace("'", "").replace("\n", " ")
-    if preco_novo and preco_novo in texto_limpo:
-        texto_limpo = texto_limpo.replace(preco_novo, preco_para_fala(preco_novo))
+    texto_para_fala = texto_narracao
+    if preco_novo and preco_novo in texto_para_fala:
+        texto_para_fala = texto_para_fala.replace(preco_novo, preco_para_fala(preco_novo))
 
-    try:
-        subprocess.run([
-            "edge-tts", "--voice", "pt-BR-FranciscaNeural",
-            "--text", texto_limpo, "--write-media", caminho_audio
-        ], check=True, timeout=30)
-    except Exception as e:
-        print(f"   ⚠️ Aviso edge-tts ({e}), gerando trilha de áudio silenciosa de fallback...")
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            "-t", "7", "-q:a", "9", "-acodec", "libmp3lame", caminho_audio
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    gerar_audio_narracao(texto_para_fala, caminho_audio)
 
     subprocess.run([
         "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i", caminho_img, "-i", caminho_audio,
-        "-vf", "zoompan=z='min(zoom+0.0005,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=900:s=1080x1920:fps=30",
+        "-vf", "zoompan=z='min(zoom+0.0006,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=900:s=1080x1920:fps=30",
         "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "192k",
         "-pix_fmt", "yuv420p", "-shortest", caminho_video
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -451,17 +495,19 @@ def criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, instr
     obs = f"\nATENÇÃO - O DONO PEDIU ESTA ALTERAÇÃO: {instrucao_extra}" if instrucao_extra else ""
     preco_fala = preco_para_fala(preco_novo)
     prompt = f"""
-    Crie o conteúdo de um post de Instagram para a página @BugdasPromos:
+    Você é a voz do mascote 'Bug das Promos' — um robô caçador de bugs de preço, hacker do bem, com óculos escuros pixelados.
+    Sua personalidade: direto, rápido, ligeiramente debochado/intimidante, sempre avisando que achou um bug ou desconto absurdo antes que a loja perceba.
+
     Produto: {produto}
     Preço Antigo: {preco_antigo}
     Preço Promoção: {preco_novo} ({desconto_pct:.0f}% OFF)
-    Preço por extenso para locução: {preco_fala}
+    Preço por extenso: {preco_fala}
     Cupom: {cupom} | Condição: {condicao}{obs}
 
     Retorne APENAS um JSON válido com estas 2 chaves:
     {{
-        "legenda": "Legenda engajadora, focada em guiar a pessoa para clicar no link da BIO e entrar no nosso grupo do TELEGRAM. NUNCA mencione envio de link por direct e NUNCA coloque o link direto no texto. Inclua 5 hashtags.",
-        "narracao": "Texto muito natural e vibrante (máximo 22 palavras) para locução de vídeo, escrevendo o preço por extenso ({preco_fala}). Chame para o grupo do Telegram na Bio!"
+        "legenda": "Legenda engajadora para o Instagram, focada em guiar a pessoa para clicar no link da BIO e entrar no nosso grupo VIP do TELEGRAM. NUNCA mencione envio de link por direct e NUNCA coloque o link direto no texto. Inclua 5 hashtags.",
+        "narracao": "Roteiro dinâmico e impactante (máximo 20 palavras) com a persona do robô Otto. Comece com gancho direto (ex: 'Alerta de bug na Amazon!', 'Olha o que o estagiário aprontou!', 'Preço despencou!'). Fale o nome e o preço ({preco_fala}), e termine mandando entrar no Telegram no link da bio antes que o estoque zere."
     }}
     """
     for modelo in MODELOS_GEMINI:
