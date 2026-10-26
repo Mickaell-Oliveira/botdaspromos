@@ -591,7 +591,41 @@ def upload_midia_publica_temporaria(caminho_arquivo):
     mime_type = "video/mp4" if eh_video else "image/jpeg"
     nome_arq = os.path.basename(caminho_arquivo)
 
-    # 1. Host primário: CDN Oficial do Telegram (via envio silencioso ao chat Admin -> getFile)
+    # 1. Host primário: Litterbox / Catbox (arquivos duram 1h, sem delete imediato e com Content-Type nativo)
+    try:
+        with open(caminho_arquivo, "rb") as f:
+            r = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "1h"},
+                files={"fileToUpload": (nome_arq, f, mime_type)},
+                headers=HEADERS,
+                timeout=30
+            )
+            if r.status_code == 200 and r.text.strip().startswith("http"):
+                url_gerada = r.text.strip()
+                print(f"   ☁️ Mídia hospedada via Litterbox: {url_gerada}")
+                return url_gerada
+    except Exception as e:
+        print(f"   ⚠️ Aviso Litterbox: {e}")
+
+    # 2. Fallback: Uguu.se (serve image/jpeg direto sem redirecionamento)
+    try:
+        with open(caminho_arquivo, "rb") as f:
+            r = requests.post(
+                "https://uguu.se/upload",
+                files={"files[]": (nome_arq, f, mime_type)},
+                headers=HEADERS,
+                timeout=30
+            ).json()
+            files_list = r.get("files", [])
+            if files_list and files_list[0].get("url"):
+                url_gerada = files_list[0]["url"]
+                print(f"   ☁️ Mídia hospedada via Uguu: {url_gerada}")
+                return url_gerada
+    except Exception as e:
+        print(f"   ⚠️ Aviso Uguu: {e}")
+
+    # 3. Fallback: CDN Oficial do Telegram (mantém arquivo ativo sem delete prematuro)
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
         try:
             endpoint = "sendVideo" if eh_video else "sendPhoto"
@@ -604,7 +638,6 @@ def upload_midia_publica_temporaria(caminho_arquivo):
                     timeout=30
                 ).json()
             msg_res = resp.get("result", {})
-            msg_id_temp = msg_res.get("message_id")
             file_id = None
             if eh_video and "video" in msg_res:
                 file_id = msg_res["video"].get("file_id")
@@ -617,47 +650,12 @@ def upload_midia_publica_temporaria(caminho_arquivo):
                     timeout=10
                 ).json()
                 file_path = r_file.get("result", {}).get("file_path")
-                # Apaga a mensagem temporária de upload no chat Admin para não poluir
-                if msg_id_temp:
-                    requests.post(
-                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
-                        data={"chat_id": ADMIN_CHAT_ID, "message_id": msg_id_temp},
-                        timeout=5
-                    )
                 if file_path:
-                    return f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+                    url_gerada = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+                    print(f"   ☁️ Mídia hospedada via Telegram CDN: {url_gerada}")
+                    return url_gerada
         except Exception as e:
-            print(f"⚠️ Aviso no upload via Telegram CDN: {e}")
-
-    # 2. Fallback: Litterbox / Catbox (serve image/jpeg e video/mp4 com header correto)
-    try:
-        with open(caminho_arquivo, "rb") as f:
-            r = requests.post(
-                "https://litterbox.catbox.moe/resources/internals/api.php",
-                data={"reqtype": "fileupload", "time": "1h"},
-                files={"fileToUpload": (nome_arq, f, mime_type)},
-                headers=HEADERS,
-                timeout=30
-            )
-            if r.status_code == 200 and r.text.strip().startswith("http"):
-                return r.text.strip()
-    except Exception:
-        pass
-
-    # 3. Fallback: Uguu.se (serve image/jpeg direto sem redirecionamento)
-    try:
-        with open(caminho_arquivo, "rb") as f:
-            r = requests.post(
-                "https://uguu.se/upload",
-                files={"files[]": (nome_arq, f, mime_type)},
-                headers=HEADERS,
-                timeout=30
-            ).json()
-            files_list = r.get("files", [])
-            if files_list and files_list[0].get("url"):
-                return files_list[0]["url"]
-    except Exception:
-        pass
+            print(f"   ⚠️ Aviso Telegram CDN: {e}")
 
     return None
 
@@ -756,16 +754,25 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
 
         r_cont = None
         base_api = ""
+        erros_detalhados = []
         for host in hosts_api:
-            resp = requests.post(f"{host}/{ig_id}/media", data=payload_container, timeout=30).json()
-            if "id" in resp:
+            resp_raw = requests.post(f"{host}/{ig_id}/media", data=payload_container, timeout=30)
+            try:
+                resp = resp_raw.json()
+            except Exception:
+                resp = {"raw": resp_raw.text}
+
+            if isinstance(resp, dict) and "id" in resp:
                 r_cont = resp
                 base_api = host
                 break
+            else:
+                msg_err = resp.get("error", {}).get("message") if isinstance(resp, dict) and "error" in resp else str(resp)
+                erros_detalhados.append(f"{host}: {msg_err}")
 
         if not r_cont or "id" not in r_cont:
-            erro_meta = r_cont.get("error", {}).get("message", str(r_cont)) if r_cont else "Erro desconhecido"
-            return False, f"Erro ao criar container na Meta: {erro_meta}"
+            detalhe_str = " | ".join(erros_detalhados) if erros_detalhados else "Nenhuma resposta da Meta"
+            return False, f"Erro ao criar container na Meta: {detalhe_str}"
 
         creation_id = r_cont["id"]
         print(f"   ⏳ Container Instagram criado ({creation_id}). Aguardando processamento...")
@@ -838,16 +845,25 @@ def publicar_story_no_instagram(produto, preco_antigo, preco_novo, cupom, url_im
 
         r_cont = None
         base_api = ""
+        erros_detalhados = []
         for host in hosts_api:
-            resp = requests.post(f"{host}/{ig_id}/media", data=payload_story, timeout=30).json()
-            if "id" in resp:
+            resp_raw = requests.post(f"{host}/{ig_id}/media", data=payload_story, timeout=30)
+            try:
+                resp = resp_raw.json()
+            except Exception:
+                resp = {"raw": resp_raw.text}
+
+            if isinstance(resp, dict) and "id" in resp:
                 r_cont = resp
                 base_api = host
                 break
+            else:
+                msg_err = resp.get("error", {}).get("message") if isinstance(resp, dict) and "error" in resp else str(resp)
+                erros_detalhados.append(f"{host}: {msg_err}")
 
         if not r_cont or "id" not in r_cont:
-            erro = r_cont.get("error", {}).get("message", str(r_cont)) if r_cont else "Erro desconhecido"
-            return False, f"Erro ao criar container de Story: {erro}"
+            detalhe_str = " | ".join(erros_detalhados) if erros_detalhados else "Nenhuma resposta da Meta"
+            return False, f"Erro ao criar container de Story: {detalhe_str}"
 
         creation_id = r_cont["id"]
         time.sleep(3)
