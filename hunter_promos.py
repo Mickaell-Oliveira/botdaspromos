@@ -647,18 +647,70 @@ def refinar_lote_com_ia(ofertas_aprovadas):
 
     return ofertas_aprovadas
 
-# ==========================================
-# 7. EXECUÇÃO PRINCIPAL
-# ==========================================
+def extrair_asin_de_link(link):
+    if not link:
+        return ""
+    m = re.search(r'/(?:dp|gp/product|gp/aw/d|exec/obidos/ASIN)/([A-Z0-9]{10})', str(link), re.IGNORECASE)
+    return m.group(1).upper() if m else ""
+
+def obter_dados_existentes_blindados():
+    """
+    Lê a planilha de forma robusta e dinâmica, garantindo detecção correta de:
+    - Produtos já cadastrados (por ASIN da Amazon, por Link e por Título);
+    - Próxima linha REAL vazia da planilha (ignora células com fórmulas vazias da tabela dinâmica).
+    """
+    try:
+        valores_col_a = planilha.col_values(1)
+        valores_col_d = planilha.col_values(4)  # Coluna D: Link
+    except Exception:
+        valores_col_a = []
+        valores_col_d = []
+
+    produtos_set = set()
+    links_set = set()
+    asins_set = set()
+    ultima_linha_preenchida = 1
+
+    for idx, nome in enumerate(valores_col_a, start=1):
+        nome_str = str(nome).strip().lower()
+        if nome_str and nome_str != 'produto':
+            produtos_set.add(nome_str)
+            ultima_linha_preenchida = max(ultima_linha_preenchida, idx)
+
+    for idx, lk in enumerate(valores_col_d, start=1):
+        lk_str = str(lk).strip()
+        if lk_str and lk_str.lower() != 'link':
+            links_set.add(lk_str)
+            asin = extrair_asin_de_link(lk_str)
+            if asin:
+                asins_set.add(asin)
+            ultima_linha_preenchida = max(ultima_linha_preenchida, idx)
+
+    # Fallback com get_all_records
+    try:
+        registros_atuais = planilha.get_all_records(numericise_ignore=['all'])
+        for r in registros_atuais:
+            p = str(r.get('Produto', '')).strip().lower()
+            lk = str(r.get('Link', '')).strip()
+            if p:
+                produtos_set.add(p)
+            if lk:
+                links_set.add(lk)
+                asin = extrair_asin_de_link(lk)
+                if asin:
+                    asins_set.add(asin)
+    except Exception:
+        registros_atuais = []
+
+    proxima_linha_vazia = ultima_linha_preenchida + 1
+    return produtos_set, links_set, asins_set, proxima_linha_vazia, registros_atuais
 def executar_hunter():
     print(f"🏹 Iniciando o Hunter de Promoções (Exclusivo Amazon | Mínimo {DESCONTO_MINIMO_PCT:.0f}% OFF ou Cupom)...")
     ofertas = buscar_ofertas_telegram()
     print(f"📦 Total de mensagens brutas coletadas nos canais: {len(ofertas)}")
 
-    registros_atuais = planilha.get_all_records(numericise_ignore=['all'])
-    produtos_ja_cadastrados = [str(linha.get('Produto', '')).lower() for linha in registros_atuais]
-    links_ja_cadastrados = [str(linha.get('Link', '')).strip() for linha in registros_atuais]
-    asins_processados = set()
+    produtos_ja_cadastrados, links_ja_cadastrados, asins_ja_cadastrados, proxima_linha, registros_atuais = obter_dados_existentes_blindados()
+    asins_processados = set(asins_ja_cadastrados)
     candidatas_aprovadas = []
     analises_amazon = 0
 
@@ -706,9 +758,9 @@ def executar_hunter():
             print(f"   ⏭️ DESCARTADO ({motivo}): {dados.get('produto')}")
             continue
 
-        nome_preliminar = dados['produto'].strip()
-        if any(nome_preliminar.lower()[:18] in prod for prod in produtos_ja_cadastrados if prod):
-            print(f"   ⏭️ Pulando: '{nome_preliminar}' já cadastrado na planilha.")
+        nome_preliminar = dados['produto'].strip().lower()
+        if any(nome_preliminar[:16] in prod for prod in produtos_ja_cadastrados if prod):
+            print(f"   ⏭️ Pulando: '{dados['produto']}' já cadastrado na planilha.")
             continue
 
         candidatas_aprovadas.append({
@@ -717,7 +769,8 @@ def executar_hunter():
             "dados": dados,
             "link_final_curto": link_final_curto,
             "motivo": motivo,
-            "cupom_limpo": cupom_limpo
+            "cupom_limpo": cupom_limpo,
+            "asin": asin_encontrado
         })
 
     # 5. Faz no máximo 1 chamada em lote ao Gemini apenas se houver ofertas aprovadas!
@@ -759,10 +812,18 @@ def executar_hunter():
             ""                             # Coluna L: Legenda_Insta
         ]
 
-        planilha.append_row(nova_linha, value_input_option='RAW')
-        produtos_ja_cadastrados.append(nome_produto.lower())
+        # Escreve explicitamente na próxima linha real vazia, nunca sobrescrevendo a linha 11
+        linha_destino = proxima_linha + novas_adicionadas
+        try:
+            planilha.update(f"A{linha_destino}:L{linha_destino}", [nova_linha], value_input_option='RAW')
+        except Exception:
+            planilha.append_row(nova_linha, value_input_option='RAW')
+
+        produtos_ja_cadastrados.add(nome_produto.lower())
+        links_ja_cadastrados.add(item["link_final_curto"])
+        asins_ja_cadastrados.add(item["asin"])
         novas_adicionadas += 1
-        print(f"   ✅ APROVADA ({item['motivo']}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
+        print(f"   ✅ APROVADA na Linha {linha_destino} ({item['motivo']}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
 
     print(f"\n🎯 Caçada finalizada! {novas_adicionadas} novas ofertas verificadas da AMAZON cadastradas.")
 

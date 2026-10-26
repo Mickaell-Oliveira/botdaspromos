@@ -281,24 +281,24 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
             draw.text((x_linha, y_prod), linha, fill=(20, 35, 90), font=f_prod)
             y_prod += 32
 
-        # 3. Preço Antigo sobre a linha "DE: R$ ________" (X centralizado na linha tracejada, Y=824)
+        # 3. Preço Antigo sobre a linha "DE: R$ ________" (deslocado para a direita e centralizado na linha tracejada)
         val_antigo_num = preco_antigo.replace("R$", "").strip() if preco_antigo else ""
         if val_antigo_num:
             f_antigo = carregar_fonte(40, True)
             bbox_ant = draw.textbbox((0, 0), val_antigo_num, font=f_antigo)
-            x_ant = 355 + (175 - (bbox_ant[2] - bbox_ant[0])) / 2
-            y_ant = offset_y_template + 824
+            x_ant = 390 + (150 - (bbox_ant[2] - bbox_ant[0])) / 2
+            y_ant = offset_y_template + 822
             draw.text((x_ant + 2, y_ant + 2), val_antigo_num, fill=(10, 25, 80), font=f_antigo)
             draw.text((x_ant, y_ant), val_antigo_num, fill=(255, 230, 230), font=f_antigo)
             meio_y = y_ant + (bbox_ant[3] - bbox_ant[1]) / 2 + 5
             draw.line([(x_ant - 5, meio_y), (x_ant + (bbox_ant[2] - bbox_ant[0]) + 5, meio_y)], fill=(255, 70, 70), width=4)
 
-        # 4. Preço Novo em destaque acima da barra amarela ao lado de "POR: R$" (X=625, Y=868)
+        # 4. Preço Novo em destaque maior acima da barra amarela ao lado de "POR: R$"
         val_novo_num = preco_novo.replace("R$", "").strip()
-        tamanho_fonte_novo = 76 if len(val_novo_num) <= 6 else (66 if len(val_novo_num) <= 8 else 56)
+        tamanho_fonte_novo = 92 if len(val_novo_num) <= 6 else (78 if len(val_novo_num) <= 8 else 66)
         f_novo = carregar_fonte(tamanho_fonte_novo, True)
-        x_novo = 625
-        y_novo = offset_y_template + (864 if tamanho_fonte_novo >= 74 else 874)
+        x_novo = 618
+        y_novo = offset_y_template + (848 if tamanho_fonte_novo >= 88 else 858)
         # Sombra escura para dar o mesmo efeito 3D do template
         draw.text((x_novo + 4, y_novo + 4), val_novo_num, fill=(10, 25, 80), font=f_novo)
         draw.text((x_novo, y_novo), val_novo_num, fill=(255, 205, 0), font=f_novo)
