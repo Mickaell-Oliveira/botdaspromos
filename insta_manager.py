@@ -298,7 +298,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
         tamanho_fonte_novo = 92 if len(val_novo_num) <= 6 else (78 if len(val_novo_num) <= 8 else 66)
         f_novo = carregar_fonte(tamanho_fonte_novo, True)
         x_novo = 618
-        y_novo = offset_y_template + (848 if tamanho_fonte_novo >= 88 else 858)
+        y_novo = offset_y_template + (874 if tamanho_fonte_novo >= 88 else 884)
         # Sombra escura para dar o mesmo efeito 3D do template
         draw.text((x_novo + 4, y_novo + 4), val_novo_num, fill=(10, 25, 80), font=f_novo)
         draw.text((x_novo, y_novo), val_novo_num, fill=(255, 205, 0), font=f_novo)
@@ -711,7 +711,7 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
         url_img = vals[4] if len(vals) > 4 else ""
         cupom = limpar_cupom(vals[6] if len(vals) > 6 else "")
         condicao = vals[7] if len(vals) > 7 else ""
-        formato = "FOTO"
+        formato = (vals[9] if len(vals) > 9 else "FOTO").strip().upper()
         legenda = vals[11] if len(vals) > 11 else ""
 
         _, _, desconto_pct, _ = validar_oferta_para_publicacao(preco_antigo, preco_novo, cupom)
@@ -721,9 +721,13 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
             legenda = textos["legenda"]
 
         # 1. Obtém URL pública da mídia (direto do arquivo da prévia no Telegram ou regerando)
-        media_url = obter_url_midia_telegram(msg_telegram, "FOTO")
+        media_url = obter_url_midia_telegram(msg_telegram, formato)
         if not media_url:
-            caminho = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct)
+            if formato == "VIDEO":
+                textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, desconto_pct=desconto_pct)
+                caminho = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos["narracao"], desconto_pct=desconto_pct)
+            else:
+                caminho = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct)
             media_url = upload_midia_publica_temporaria(caminho)
 
         if not media_url:
@@ -1109,7 +1113,7 @@ def processar_fila_instagram():
             if not produto:
                 continue
 
-            # Valida se a oferta cumpre a regra de >= 30% OFF ou Cupom válido
+            # Valida se a oferta cumpre a regra de >= 20% OFF ou Cupom válido
             valida, resumo_val, desconto_pct, cupom_limpo = validar_oferta_para_publicacao(
                 linha.get('Preco_Antigo', ''),
                 linha.get('Preco_Novo', ''),
@@ -1134,27 +1138,82 @@ def processar_fila_instagram():
             preco_novo = formatar_preco(str(linha.get('Preco_Novo', '')))
             condicao = str(linha.get('Condicao', ''))
             url_img = str(linha.get('Imagem_URL', ''))
-            formato = "FOTO"
-
+            formato_linha = str(linha.get('Formato_Insta', 'FOTO')).strip().upper()
             inst_extra = status.split("|")[1] if "|" in status else ""
 
+            # ----------------------------------------------------
+            # CASO A: VÍDEO (REELS) -> Envia para Aprovação do Admin
+            # ----------------------------------------------------
+            if formato_linha == "VIDEO":
+                try:
+                    print(f"🎬 Gerando criativo de VÍDEO (Reels) da Linha {indice}: {produto} ({resumo_val})")
+                    textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom_limpo, condicao, inst_extra, desconto_pct=desconto_pct)
+                    legenda = textos['legenda']
+
+                    caminho_midia = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom_limpo, url_img, textos['narracao'], desconto_pct=desconto_pct)
+                    msg_id = enviar_para_aprovacao_admin(indice, "VIDEO", caminho_midia, legenda, resumo_val)
+                    if msg_id:
+                        planilha.update_cell(indice, COL_STATUS_INSTA, "Em Aprovacao")
+                        planilha.update_cell(indice, COL_LEGENDA_INSTA, legenda)
+                        gerados += 1
+                        print(f"   ✅ Prévia do Vídeo enviada ao Admin para aprovação (msg_id={msg_id})!")
+                    if gerados >= 2:
+                        break
+                except Exception as e:
+                    print(f"❌ Erro ao gerar vídeo da Linha {indice}: {e}")
+                continue
+
+            # ----------------------------------------------------
+            # CASO B: FOTO -> Publicação 100% Automática (Feed + Story)
+            # ----------------------------------------------------
             try:
-                print(f"🎬 Gerando criativo (FOTO) da linha {indice}: {produto} ({resumo_val})")
-                textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom_limpo, condicao, inst_extra, desconto_pct=desconto_pct)
-                legenda = textos['legenda']
+                # 1. Publica nos Stories imediatamente (sem travar por janela de Feed)
+                print(f"📸 Publicando Linha {indice} automaticamente nos Stories do Instagram...")
+                ok_st, msg_st = publicar_story_no_instagram(
+                    produto, preco_antigo, preco_novo, cupom_limpo, url_img, desconto_pct=desconto_pct
+                )
+                if ok_st:
+                    print(f"   🎉 Story postado com sucesso no Instagram! (ID: {msg_st})")
+                else:
+                    print(f"   ℹ️ Aviso Story: {msg_st}")
 
-                caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom_limpo, url_img, formato="FOTO", desconto_pct=desconto_pct)
+                # 2. Publica no Feed se respeitar a janela de proteção de engajamento (3h)
+                posts_recentes = [l for l in registros if "publicado em" in str(l.get('Status_Insta', '')).lower()]
+                pode_postar_feed = True
+                if posts_recentes:
+                    m_tempo = re.search(r'publicado em (\d+)', str(posts_recentes[-1].get('Status_Insta', '')).lower())
+                    if m_tempo:
+                        ts_ultimo = int(m_tempo.group(1))
+                        horas_passadas = (time.time() - ts_ultimo) / 3600.0
+                        if horas_passadas < INTERVALO_MINIMO_FEED_HORAS:
+                            espera_min = int((INTERVALO_MINIMO_FEED_HORAS - horas_passadas) * 60)
+                            print(f"   ⏳ Proteção Feed: Último post foi há {horas_passadas:.1f}h. Story publicado, aguardando {espera_min} min para Feed.")
+                            pode_postar_feed = False
 
-                msg_id = enviar_para_aprovacao_admin(indice, "FOTO", caminho_midia, legenda, resumo_val)
-                if msg_id:
-                    planilha.update_cell(indice, COL_STATUS_INSTA, "Em Aprovacao")
-                    planilha.update_cell(indice, COL_LEGENDA_INSTA, legenda)
-                    gerados += 1
-                    print(f"   ✅ Prévia enviada ao Admin (msg_id={msg_id})!")
+                if pode_postar_feed and IG_ACCESS_TOKEN:
+                    print(f"🚀 Publicando Linha {indice} automaticamente no Feed do Instagram...")
+                    sucesso_feed, detalhe_feed = publicar_linha_no_instagram(indice)
+                    if sucesso_feed:
+                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {int(time.time())}")
+                        print(f"   🎉 Linha {indice} publicada no Feed do Instagram! (ID: {detalhe_feed})")
+                        if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta publicada automaticamente no Feed e Stories do Instagram!\n\n📦 {produto}\n💰 {preco_novo}\n🆔 Post ID: {detalhe_feed}"}
+                            )
+                        gerados += 1
+                    else:
+                        print(f"   ⚠️ Falha ao publicar no Feed da Linha {indice}: {detalhe_feed}")
+                else:
+                    if not IG_ACCESS_TOKEN:
+                        print("   ⚠️ IG_ACCESS_TOKEN não configurado para postar no Feed.")
+                    else:
+                        planilha.update_cell(indice, COL_STATUS_INSTA, "Story Postado (Aguardando Janela Feed)")
+
                 if gerados >= 2:
                     break
             except Exception as e:
-                print(f"❌ Erro linha {indice}: {e}")
+                print(f"❌ Erro no processamento automático da Linha {indice}: {e}")
 
 if __name__ == "__main__":
     processar_fila_instagram()
