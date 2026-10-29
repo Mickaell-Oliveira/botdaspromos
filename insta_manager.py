@@ -8,7 +8,7 @@ import requests
 import gspread
 from google.oauth2.service_account import Credentials
 from google import genai
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 # ==========================================
 # 1. CONFIGURAÇÕES GERAIS
@@ -23,7 +23,9 @@ ELEVENLABS_API_KEY = (os.getenv('ELEVENLABS_API_KEY') or '').strip()
 ELEVENLABS_VOICE_ID = (os.getenv('ELEVENLABS_VOICE_ID') or 'ycxdm1PRMs962FxyyuJ0').strip()
 DESCONTO_MINIMO_PCT = 20.0
 PRECO_MINIMO_INSTA = 80.0
-INTERVALO_MINIMO_FEED_HORAS = 3.0  # Janela de proteção do algoritmo do Instagram (Feed/Reels)
+INTERVALO_MINIMO_FEED_HORAS = 4.0     # Intervalo mínimo (4h) entre posts no Feed para distribuir ao longo do dia
+MAX_POSTS_FEED_DIA = 3                # Teto de 3 publicações por dia no Feed
+INTERVALO_MINIMO_STORY_MINUTOS = 25   # Intervalo mínimo entre envios no Instagram para não postar várias seguidas
 
 TERMOS_BLOQUEADOS_INSTA = [
     'pilha', 'bateria cr', 'cr2032', 'aa ', 'aaa ', 'cartela', 'papel higienico', 'papel higiênico',
@@ -237,8 +239,13 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
             img = template_base
             offset_y_template = 0
         else:
-            # Para VIDEO (1080x1920), centraliza o template 1080x1080 em um fundo azul-escuro harmônico da identidade visual
-            img = Image.new("RGB", (1080, 1920), color=(9, 45, 166))
+            # Para STORY e VIDEO (1080x1920 - 9:16), cria fundo preenchido com o próprio template desfocado e escurecido,
+            # colando a arte 1080x1080 centralizada sem espremer nem distorcer a imagem
+            fundo_vertical = Image.open(caminho_template).convert("RGB").resize((1920, 1920), Image.Resampling.LANCZOS)
+            fundo_vertical = fundo_vertical.crop((420, 0, 1500, 1920))
+            fundo_vertical = fundo_vertical.filter(ImageFilter.GaussianBlur(radius=28))
+            fundo_vertical = ImageEnhance.Brightness(fundo_vertical).enhance(0.55)
+            img = fundo_vertical
             offset_y_template = 420
             img.paste(template_base, (0, offset_y_template))
 
@@ -286,19 +293,33 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
         if val_antigo_num:
             f_antigo = carregar_fonte(40, True)
             bbox_ant = draw.textbbox((0, 0), val_antigo_num, font=f_antigo)
-            x_ant = 390 + (150 - (bbox_ant[2] - bbox_ant[0])) / 2
+            larg_ant = bbox_ant[2] - bbox_ant[0]
+            x_ant = max(408, 420 + (135 - larg_ant) / 2)
             y_ant = offset_y_template + 822
             draw.text((x_ant + 2, y_ant + 2), val_antigo_num, fill=(10, 25, 80), font=f_antigo)
             draw.text((x_ant, y_ant), val_antigo_num, fill=(255, 230, 230), font=f_antigo)
             meio_y = y_ant + (bbox_ant[3] - bbox_ant[1]) / 2 + 5
-            draw.line([(x_ant - 5, meio_y), (x_ant + (bbox_ant[2] - bbox_ant[0]) + 5, meio_y)], fill=(255, 70, 70), width=4)
+            draw.line([(x_ant - 5, meio_y), (x_ant + larg_ant + 5, meio_y)], fill=(255, 70, 70), width=4)
 
-        # 4. Preço Novo em destaque maior acima da barra amarela ao lado de "POR: R$"
+        # 4. Preço Novo em destaque acima da barra amarela ao lado de "POR: R$"
         val_novo_num = preco_novo.replace("R$", "").strip()
-        tamanho_fonte_novo = 92 if len(val_novo_num) <= 6 else (78 if len(val_novo_num) <= 8 else 66)
+        tamanho_fonte_novo = 80 if len(val_novo_num) <= 6 else (68 if len(val_novo_num) <= 8 else 58)
         f_novo = carregar_fonte(tamanho_fonte_novo, True)
+        bbox_novo = draw.textbbox((0, 0), val_novo_num, font=f_novo)
+        larg_novo = bbox_novo[2] - bbox_novo[0]
         x_novo = 618
-        y_novo = offset_y_template + (874 if tamanho_fonte_novo >= 88 else 884)
+        y_novo = offset_y_template + (884 if tamanho_fonte_novo >= 78 else (892 if tamanho_fonte_novo >= 66 else 900))
+
+        # Estende a barra amarela original do template (Y=970..992) até cobrir todo o preço novo
+        x_fim_preco = int(x_novo + larg_novo)
+        if x_fim_preco > 825:
+            larg_extensao = max(1, x_fim_preco - 810)
+            fatia_meio = template_base.crop((700, 970, 760, 992)).resize((larg_extensao, 22), Image.Resampling.LANCZOS)
+            ponta_direita = template_base.crop((825, 970, 845, 992))
+            img.paste(fatia_meio, (810, offset_y_template + 970))
+            img.paste(ponta_direita, (810 + larg_extensao, offset_y_template + 970))
+            draw = ImageDraw.Draw(img)
+
         # Sombra escura para dar o mesmo efeito 3D do template
         draw.text((x_novo + 4, y_novo + 4), val_novo_num, fill=(10, 25, 80), font=f_novo)
         draw.text((x_novo, y_novo), val_novo_num, fill=(255, 205, 0), font=f_novo)
@@ -823,7 +844,7 @@ def publicar_story_no_instagram(produto, preco_antigo, preco_novo, cupom, url_im
         caminho_story = f"story_{int(time.time())}.jpg"
         desenhar_arte(
             produto, preco_antigo, preco_novo, cupom, url_img,
-            formato="FOTO", desconto_pct=desconto_pct, caminho_saida=caminho_story
+            formato="STORY", desconto_pct=desconto_pct, caminho_saida=caminho_story
         )
         media_url = upload_midia_publica_temporaria(caminho_story)
         if not media_url:
@@ -882,16 +903,44 @@ def publicar_story_no_instagram(produto, preco_antigo, preco_novo, cupom, url_im
     except Exception as e:
         return False, str(e)
 
-def obter_horario_ultimo_post_feed(registros):
+def verificar_janelas_instagram(registros):
     """
-    Verifica há quanto tempo o último post de Feed/Reels foi publicado.
-    Garante que o algoritmo do Instagram tenha pelo menos 3 horas para distribuir a publicação anterior.
+    Calcula o estado de distribuição do Instagram:
+    - Feed: máximo de MAX_POSTS_FEED_DIA (3) por dia (fuso BRT) e intervalo mínimo de INTERVALO_MINIMO_FEED_HORAS (4h) entre posts.
+    - Geral/Stories: intervalo mínimo de INTERVALO_MINIMO_STORY_MINUTOS (25 min) entre envios para não subir várias promoções seguidas.
     """
-    for linha in reversed(registros):
-        st = str(linha.get('Status_Insta', '')).strip().lower()
-        if "publicado" in st:
-            return True  # Tem registro de publicação
-    return False
+    agora = time.time()
+    dia_brt_atual = int((agora - 3 * 3600) // 86400)
+    ts_feed = []
+    ts_todos = []
+
+    for l in registros:
+        st = str(l.get('Status_Insta', '')).strip().lower()
+        for m in re.finditer(r'publicado em (\d+)', st):
+            t = int(m.group(1))
+            ts_feed.append(t)
+            ts_todos.append(t)
+        for m in re.finditer(r'story em (\d+)', st):
+            t = int(m.group(1))
+            ts_todos.append(t)
+
+    ultimo_feed = max(ts_feed, default=0)
+    ultimo_envio = max(ts_todos, default=0)
+    posts_feed_hoje = sum(1 for t in ts_feed if int((t - 3 * 3600) // 86400) == dia_brt_atual)
+
+    horas_desde_feed = (agora - ultimo_feed) / 3600.0 if ultimo_feed else 999.0
+    minutos_desde_envio = (agora - ultimo_envio) / 60.0 if ultimo_envio else 999.0
+
+    pode_feed = (posts_feed_hoje < MAX_POSTS_FEED_DIA) and (horas_desde_feed >= INTERVALO_MINIMO_FEED_HORAS)
+    pode_story = minutos_desde_envio >= INTERVALO_MINIMO_STORY_MINUTOS
+
+    return {
+        "pode_feed": pode_feed,
+        "pode_story": pode_story,
+        "posts_feed_hoje": posts_feed_hoje,
+        "horas_desde_feed": horas_desde_feed,
+        "minutos_desde_envio": minutos_desde_envio,
+    }
 
 # ==========================================
 # 6. LEITURA DE CLIQUES E PEDIDOS DE EDIÇÃO
@@ -1095,31 +1144,43 @@ def processar_fila_instagram():
     verificar_respostas_do_admin()
     print("\n🎨 Verificando fila de criação do Instagram...")
     registros = planilha.get_all_records(numericise_ignore=['all'])
+    estado_insta = verificar_janelas_instagram(registros)
     gerados = 0
 
     for indice, linha in enumerate(registros, start=2):
         postar_insta = str(linha.get('Postar_Insta', '')).upper()
         status = str(linha.get('Status_Insta', '')).strip()
+        status_lower = status.lower()
 
-        # Se uma linha já estava marcada como "Aprovado" na planilha, publica no Instagram
-        if status == "Aprovado" and IG_ACCESS_TOKEN:
-            # Checa proteção de distribuição do algoritmo: se publicou há menos de 3h, aguarda a próxima janela
-            posts_recentes = [l for l in registros if "publicado em" in str(l.get('Status_Insta', '')).lower()]
-            if posts_recentes:
-                m_tempo = re.search(r'publicado em (\d+)', str(posts_recentes[-1].get('Status_Insta', '')).lower())
-                if m_tempo:
-                    ts_ultimo = int(m_tempo.group(1))
-                    horas_passadas = (time.time() - ts_ultimo) / 3600.0
-                    if horas_passadas < INTERVALO_MINIMO_FEED_HORAS:
-                        espera_min = int((INTERVALO_MINIMO_FEED_HORAS - horas_passadas) * 60)
-                        print(f"   ⏳ Proteção de Engajamento: Último post no Feed foi há {horas_passadas:.1f}h. Aguardando {espera_min} min para não canibalizar a distribuição.")
-                        continue
+        # 1. Linhas já aprovadas ou que já tiveram Story postado e aguardam abertura da janela do Feed
+        aguardando_janela_feed = (
+            status == "Aprovado"
+            or "aguardando janela feed" in status_lower
+            or status_lower.startswith("story em ")
+        )
+        if aguardando_janela_feed and IG_ACCESS_TOKEN:
+            if not estado_insta["pode_feed"]:
+                if estado_insta["posts_feed_hoje"] >= MAX_POSTS_FEED_DIA:
+                    print(f"   ⏳ Limite diário atingido ({estado_insta['posts_feed_hoje']}/{MAX_POSTS_FEED_DIA} posts no Feed hoje). Linha {indice} aguarda próximo ciclo.")
+                else:
+                    espera_min = max(1, int((INTERVALO_MINIMO_FEED_HORAS - estado_insta["horas_desde_feed"]) * 60))
+                    print(f"   ⏳ Distribuição de Feed: Último post foi há {estado_insta['horas_desde_feed']:.1f}h. Aguardando {espera_min} min (intervalo de {INTERVALO_MINIMO_FEED_HORAS:.0f}h).")
+                continue
 
-            print(f"🚀 Publicando Linha {indice} aprovada no Instagram...")
+            print(f"🚀 Publicando Linha {indice} no Feed do Instagram (Janela de distribuição aberta)...")
             ok_ig, msg_ig = publicar_linha_no_instagram(indice)
             if ok_ig:
-                planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {int(time.time())}")
-                print(f"   🎉 Linha {indice} publicada no Instagram (ID: {msg_ig})!")
+                agora_ts = int(time.time())
+                planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
+                print(f"   🎉 Linha {indice} publicada no Feed do Instagram (ID: {msg_ig})!")
+                if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
+                    produto_nome = str(linha.get('Produto', '')).strip()
+                    preco_n = formatar_preco(str(linha.get('Preco_Novo', '')))
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta publicada no Feed do Instagram!\n\n📦 {produto_nome}\n💰 {preco_n}\n🆔 Post ID: {msg_ig}"}
+                    )
+                break  # Publica apenas 1 promoção por execução para nunca fazer posts seguidos
             else:
                 print(f"   ⚠️ Falha ao publicar Linha {indice}: {msg_ig}")
             continue
@@ -1173,18 +1234,23 @@ def processar_fila_instagram():
                         planilha.update_cell(indice, COL_LEGENDA_INSTA, legenda)
                         gerados += 1
                         print(f"   ✅ Prévia do Vídeo enviada ao Admin para aprovação (msg_id={msg_id})!")
-                    if gerados >= 2:
+                    if gerados >= 1:
                         break
                 except Exception as e:
                     print(f"❌ Erro ao gerar vídeo da Linha {indice}: {e}")
                 continue
 
             # ----------------------------------------------------
-            # CASO B: FOTO -> Publicação 100% Automática (Feed + Story)
+            # CASO B: FOTO -> Publicação Automática Espaçada (1 por ciclo)
             # ----------------------------------------------------
+            if not estado_insta["pode_story"]:
+                espera_st = max(1, int(INTERVALO_MINIMO_STORY_MINUTOS - estado_insta["minutos_desde_envio"]))
+                print(f"   ⏳ Anti-Spam Instagram: Último envio foi há {estado_insta['minutos_desde_envio']:.0f} min. Aguardando {espera_st} min para não postar promoções seguidas.")
+                break
+
             try:
-                # 1. Publica nos Stories imediatamente (sem travar por janela de Feed)
-                print(f"📸 Publicando Linha {indice} automaticamente nos Stories do Instagram...")
+                agora_ts = int(time.time())
+                print(f"📸 Publicando Linha {indice} automaticamente nos Stories do Instagram (9:16)...")
                 ok_st, msg_st = publicar_story_no_instagram(
                     produto, preco_antigo, preco_novo, cupom_limpo, url_img, desconto_pct=desconto_pct
                 )
@@ -1193,41 +1259,35 @@ def processar_fila_instagram():
                 else:
                     print(f"   ℹ️ Aviso Story: {msg_st}")
 
-                # 2. Publica no Feed se respeitar a janela de proteção de engajamento (3h)
-                posts_recentes = [l for l in registros if "publicado em" in str(l.get('Status_Insta', '')).lower()]
-                pode_postar_feed = True
-                if posts_recentes:
-                    m_tempo = re.search(r'publicado em (\d+)', str(posts_recentes[-1].get('Status_Insta', '')).lower())
-                    if m_tempo:
-                        ts_ultimo = int(m_tempo.group(1))
-                        horas_passadas = (time.time() - ts_ultimo) / 3600.0
-                        if horas_passadas < INTERVALO_MINIMO_FEED_HORAS:
-                            espera_min = int((INTERVALO_MINIMO_FEED_HORAS - horas_passadas) * 60)
-                            print(f"   ⏳ Proteção Feed: Último post foi há {horas_passadas:.1f}h. Story publicado, aguardando {espera_min} min para Feed.")
-                            pode_postar_feed = False
-
-                if pode_postar_feed and IG_ACCESS_TOKEN:
-                    print(f"🚀 Publicando Linha {indice} automaticamente no Feed do Instagram...")
+                if estado_insta["pode_feed"] and IG_ACCESS_TOKEN:
+                    print(f"🚀 Publicando Linha {indice} automaticamente no Feed do Instagram ({estado_insta['posts_feed_hoje'] + 1}/{MAX_POSTS_FEED_DIA} hoje)...")
                     sucesso_feed, detalhe_feed = publicar_linha_no_instagram(indice)
                     if sucesso_feed:
-                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {int(time.time())}")
+                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
                         print(f"   🎉 Linha {indice} publicada no Feed do Instagram! (ID: {detalhe_feed})")
                         if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
                             requests.post(
                                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta publicada automaticamente no Feed e Stories do Instagram!\n\n📦 {produto}\n💰 {preco_novo}\n🆔 Post ID: {detalhe_feed}"}
+                                data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta publicada automaticamente no Feed ({estado_insta['posts_feed_hoje'] + 1}/{MAX_POSTS_FEED_DIA} hoje) e Stories do Instagram!\n\n📦 {produto}\n💰 {preco_novo}\n🆔 Post ID: {detalhe_feed}"}
                             )
-                        gerados += 1
                     else:
                         print(f"   ⚠️ Falha ao publicar no Feed da Linha {indice}: {detalhe_feed}")
+                        if ok_st:
+                            planilha.update_cell(indice, COL_STATUS_INSTA, f"Story em {agora_ts} (Aguardando Janela Feed)")
                 else:
                     if not IG_ACCESS_TOKEN:
                         print("   ⚠️ IG_ACCESS_TOKEN não configurado para postar no Feed.")
                     else:
-                        planilha.update_cell(indice, COL_STATUS_INSTA, "Story Postado (Aguardando Janela Feed)")
+                        motivo_espera = (
+                            f"limite diário {estado_insta['posts_feed_hoje']}/{MAX_POSTS_FEED_DIA} atingido"
+                            if estado_insta["posts_feed_hoje"] >= MAX_POSTS_FEED_DIA
+                            else f"último Feed há {estado_insta['horas_desde_feed']:.1f}h (mín. {INTERVALO_MINIMO_FEED_HORAS:.0f}h)"
+                        )
+                        print(f"   ⏳ Proteção Feed ({motivo_espera}). Story publicado, oferta guardada para a próxima janela de Feed.")
+                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Story em {agora_ts} (Aguardando Janela Feed)")
 
-                if gerados >= 2:
-                    break
+                # Encerra após publicar 1 promoção nesta execução para nunca subir várias promoções seguidas
+                break
             except Exception as e:
                 print(f"❌ Erro no processamento automático da Linha {indice}: {e}")
 

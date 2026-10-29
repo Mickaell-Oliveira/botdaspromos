@@ -9,12 +9,6 @@ from google.oauth2.service_account import Credentials
 from google import genai
 from PIL import Image
 
-# Importa o publicador de Stories do Instagram (para divulgar toda promo postada no Telegram)
-try:
-    from insta_manager import publicar_story_no_instagram
-except Exception:
-    publicar_story_no_instagram = None
-
 # ==========================================
 # 1. CONFIGURAÇÕES
 # ==========================================
@@ -466,18 +460,6 @@ def processar_planilha():
             if res and res.get('ok'):
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, "Postado")
                 print("✅ Enviado para o Canal e marcado como Postado!")
-
-                # Posta automaticamente nos Stories do Instagram para dar alcance sem poluir o Feed
-                if publicar_story_no_instagram:
-                    print(f"📸 Publicando nos Stories do Instagram: {produto}...")
-                    ok_st, msg_st = publicar_story_no_instagram(
-                        produto, preco_antigo_fmt, preco_novo_fmt,
-                        cupom_limpo, linha.get('Imagem_URL', ''), desconto_pct=desconto_pct
-                    )
-                    if ok_st:
-                        print(f"   🎉 Story postado com sucesso! (ID: {msg_st})")
-                    else:
-                        print(f"   ℹ️ Aviso Story: {msg_st}")
             else:
                 erro = res.get('description', 'Erro desconhecido') if res else 'Falha na requisição'
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Erro: {erro}")
