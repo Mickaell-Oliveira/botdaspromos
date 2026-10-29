@@ -920,7 +920,7 @@ def verificar_janelas_instagram(registros):
             t = int(m.group(1))
             ts_feed.append(t)
             ts_todos.append(t)
-        for m in re.finditer(r'story em (\d+)', st):
+        for m in re.finditer(r'story (?:publicado )?em (\d+)', st):
             t = int(m.group(1))
             ts_todos.append(t)
 
@@ -1146,19 +1146,29 @@ def processar_fila_instagram():
     registros = planilha.get_all_records(numericise_ignore=['all'])
     estado_insta = verificar_janelas_instagram(registros)
     gerados = 0
+    publicou_neste_ciclo = False
 
-    for indice, linha in enumerate(registros, start=2):
+    # Percorre da linha mais recente (final da planilha) para a mais antiga, garantindo sempre ofertas frescas
+    itens_planilha = list(enumerate(registros, start=2))
+
+    # Limpa eventuais status legados "Aguardando Janela Feed" antigos para não postar promoção velha no Feed
+    agora_limpeza = time.time()
+    for indice_l, linha_l in itens_planilha:
+        st_l = str(linha_l.get('Status_Insta', '')).strip()
+        if "aguardando janela feed" in st_l.lower():
+            m_ts = re.search(r'(\d{10})', st_l)
+            ts_item = int(m_ts.group(1)) if m_ts else 0
+            if (agora_limpeza - ts_item) > 7200:
+                novo_st = f"Story Publicado em {ts_item}" if ts_item else "Story Publicado"
+                planilha.update_cell(indice_l, COL_STATUS_INSTA, novo_st)
+                linha_l['Status_Insta'] = novo_st
+
+    for indice, linha in reversed(itens_planilha):
         postar_insta = str(linha.get('Postar_Insta', '')).upper()
         status = str(linha.get('Status_Insta', '')).strip()
-        status_lower = status.lower()
 
-        # 1. Linhas já aprovadas ou que já tiveram Story postado e aguardam abertura da janela do Feed
-        aguardando_janela_feed = (
-            status == "Aprovado"
-            or "aguardando janela feed" in status_lower
-            or status_lower.startswith("story em ")
-        )
-        if aguardando_janela_feed and IG_ACCESS_TOKEN:
+        # 1. Linhas aprovadas manualmente pelo Admin (ex: Vídeos/Reels)
+        if status == "Aprovado" and IG_ACCESS_TOKEN:
             if not estado_insta["pode_feed"]:
                 if estado_insta["posts_feed_hoje"] >= MAX_POSTS_FEED_DIA:
                     print(f"   ⏳ Limite diário atingido ({estado_insta['posts_feed_hoje']}/{MAX_POSTS_FEED_DIA} posts no Feed hoje). Linha {indice} aguarda próximo ciclo.")
@@ -1167,20 +1177,14 @@ def processar_fila_instagram():
                     print(f"   ⏳ Distribuição de Feed: Último post foi há {estado_insta['horas_desde_feed']:.1f}h. Aguardando {espera_min} min (intervalo de {INTERVALO_MINIMO_FEED_HORAS:.0f}h).")
                 continue
 
-            print(f"🚀 Publicando Linha {indice} no Feed do Instagram (Janela de distribuição aberta)...")
+            print(f"🚀 Publicando Linha {indice} aprovada no Feed do Instagram...")
             ok_ig, msg_ig = publicar_linha_no_instagram(indice)
             if ok_ig:
                 agora_ts = int(time.time())
                 planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
                 print(f"   🎉 Linha {indice} publicada no Feed do Instagram (ID: {msg_ig})!")
-                if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-                    produto_nome = str(linha.get('Produto', '')).strip()
-                    preco_n = formatar_preco(str(linha.get('Preco_Novo', '')))
-                    requests.post(
-                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                        data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta publicada no Feed do Instagram!\n\n📦 {produto_nome}\n💰 {preco_n}\n🆔 Post ID: {msg_ig}"}
-                    )
-                break  # Publica apenas 1 promoção por execução para nunca fazer posts seguidos
+                publicou_neste_ciclo = True
+                break
             else:
                 print(f"   ⚠️ Falha ao publicar Linha {indice}: {msg_ig}")
             continue
@@ -1241,7 +1245,7 @@ def processar_fila_instagram():
                 continue
 
             # ----------------------------------------------------
-            # CASO B: FOTO -> Publicação Automática Espaçada (1 por ciclo)
+            # CASO B: FOTO -> Publicação Automática Espaçada (Sem fila acumulativa)
             # ----------------------------------------------------
             if not estado_insta["pode_story"]:
                 espera_st = max(1, int(INTERVALO_MINIMO_STORY_MINUTOS - estado_insta["minutos_desde_envio"]))
@@ -1273,7 +1277,7 @@ def processar_fila_instagram():
                     else:
                         print(f"   ⚠️ Falha ao publicar no Feed da Linha {indice}: {detalhe_feed}")
                         if ok_st:
-                            planilha.update_cell(indice, COL_STATUS_INSTA, f"Story em {agora_ts} (Aguardando Janela Feed)")
+                            planilha.update_cell(indice, COL_STATUS_INSTA, f"Story Publicado em {agora_ts}")
                 else:
                     if not IG_ACCESS_TOKEN:
                         print("   ⚠️ IG_ACCESS_TOKEN não configurado para postar no Feed.")
@@ -1283,13 +1287,37 @@ def processar_fila_instagram():
                             if estado_insta["posts_feed_hoje"] >= MAX_POSTS_FEED_DIA
                             else f"último Feed há {estado_insta['horas_desde_feed']:.1f}h (mín. {INTERVALO_MINIMO_FEED_HORAS:.0f}h)"
                         )
-                        print(f"   ⏳ Proteção Feed ({motivo_espera}). Story publicado, oferta guardada para a próxima janela de Feed.")
-                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Story em {agora_ts} (Aguardando Janela Feed)")
+                        print(f"   ✅ Story publicado ({motivo_espera}). Linha finalizada apenas no Story para não acumular fila antiga no Feed.")
+                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Story Publicado em {agora_ts}")
 
-                # Encerra após publicar 1 promoção nesta execução para nunca subir várias promoções seguidas
+                publicou_neste_ciclo = True
                 break
             except Exception as e:
                 print(f"❌ Erro no processamento automático da Linha {indice}: {e}")
+
+    # Fallback de Frescor (máx. 2 horas): Se a janela do Feed (4h) estiver aberta e não entrou oferta inédita neste minuto,
+    # pode promover apenas o Story mais recente das últimas 2 horas (nunca ofertas antigas)
+    if not publicou_neste_ciclo and estado_insta["pode_feed"] and IG_ACCESS_TOKEN:
+        agora_ts = int(time.time())
+        for indice, linha in reversed(itens_planilha):
+            st = str(linha.get('Status_Insta', '')).strip()
+            m_st = re.search(r'story (?:publicado )?em (\d+)', st.lower())
+            if m_st:
+                ts_story = int(m_st.group(1))
+                if (agora_ts - ts_story) <= 7200:  # Máximo 2 horas de idade
+                    produto_nome = str(linha.get('Produto', '')).strip()
+                    preco_n = formatar_preco(str(linha.get('Preco_Novo', '')))
+                    print(f"🚀 Janela do Feed aberta: promovendo oferta recente (<2h) da Linha {indice} ({produto_nome})...")
+                    ok_ig, msg_ig = publicar_linha_no_instagram(indice)
+                    if ok_ig:
+                        planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
+                        print(f"   🎉 Linha {indice} publicada no Feed do Instagram! (ID: {msg_ig})")
+                        if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta recente (<2h) publicada no Feed do Instagram ({estado_insta['posts_feed_hoje'] + 1}/{MAX_POSTS_FEED_DIA} hoje)!\n\n📦 {produto_nome}\n💰 {preco_n}\n🆔 Post ID: {msg_ig}"}
+                            )
+                    break
 
 if __name__ == "__main__":
     processar_fila_instagram()
