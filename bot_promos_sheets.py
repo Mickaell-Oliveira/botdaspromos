@@ -67,7 +67,7 @@ def preco_para_float(valor_str):
         if len(partes[-1]) == 3 and len(partes) > 1:
             s = s.replace('.', '')
     elif s.isdigit() and len(s) >= 3:
-        # Corrige valores em que o Google Sheets/gspread removeu a vírgula dos centavos (ex: "689,00" -> "68900")
+        # Normalizacao de centavos para valores numericos da planilha
         s = s[:-2] + "." + s[-2:]
     try:
         return float(s)
@@ -161,7 +161,7 @@ def obter_bytes_imagem_tratada(url_imagem):
             img.save(img_byte_arr, format='JPEG', quality=90)
             return img_byte_arr.getvalue()
     except Exception as e:
-        print(f"⚠️ Aviso ao baixar/cortar imagem ({e}).")
+        print(f"[WARN] Falha ao processar imagem ({e}).")
     return None
 
 def enviar_mensagem_telegram(chat_id, texto, url_imagem, reply_markup=None):
@@ -329,7 +329,7 @@ def interpretar_e_aplicar_sugestao_admin(linha_idx, texto_sugestao):
             planilha.update_cell(linha_idx, COL_CUPOM, str(dados["novo_cupom"]).strip().upper())
             mudou = True
 
-        # Reseta o status para que Telegram e Instagram gerem as novas prévias corrigidas
+        # Reseta o status para reprocessamento das previas com dados atualizados
         planilha.update_cell(linha_idx, COL_STATUS_TG, "")
         planilha.update_cell(linha_idx, COL_STATUS_INSTA, "Aguardando Geracao")
 
@@ -339,7 +339,7 @@ def interpretar_e_aplicar_sugestao_admin(linha_idx, texto_sugestao):
             data={"chat_id": ADMIN_CHAT_ID, "text": f"✏️ Linha {linha_idx} atualizada!\n{msg_feedback}\n\n🔄 As prévias serão recriadas automaticamente com os novos dados."}
         )
     except Exception as e:
-        print(f"⚠️ Erro ao interpretar sugestão: {e}")
+        print(f"[ERROR] Falha ao interpretar comando do administrador: {e}")
         planilha.update_cell(linha_idx, COL_STATUS_INSTA, f"Regerar|{texto_sugestao}")
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -410,19 +410,19 @@ def verificar_respostas_do_admin():
                 match = re.search(r"Linha\s*(\d+)", caption_original)
                 if match and msg.get("text"):
                     linha = int(match.group(1))
-                    print(f"📩 Sugestão do Admin recebida para Linha {linha}: {msg['text']}")
+                    print(f"[INFO] Instrucao recebida para Linha {linha}: {msg['text']}")
                     interpretar_e_aplicar_sugestao_admin(linha, msg['text'])
 
         if maior_id > 0:
             requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={maior_id + 1}", timeout=5)
     except Exception as e:
-        print(f"⚠️ Erro ao checar respostas do Admin: {e}")
+        print(f"[WARN] Falha ao consultar respostas do administrador: {e}")
 
 # ==========================================
 # 5. EXECUÇÃO PRINCIPAL
 # ==========================================
 def processar_planilha():
-    print("🔄 Verificando aprovações do Admin e lendo planilha do Telegram...")
+    print("[INFO] Verificando aprovacoes e consultando base de dados...e lendo planilha do Telegram...")
     verificar_respostas_do_admin()
     registros = planilha.get_all_records(numericise_ignore=['all'])
 
@@ -433,7 +433,7 @@ def processar_planilha():
         if not produto:
             continue
 
-        # Publica no Canal @OBugdasPromos ofertas novas ("") ou que estavam aguardando ("Em Aprovacao" / "Aprovado")
+        # Publica no Canal ofertas pendentes de envio
         if status_atual == "" or status_atual.lower() in ["aprovado", "em aprovacao"] or "chat_id is empty" in status_atual:
             valida, resumo_val, desconto_pct, cupom_limpo = validar_oferta_para_publicacao(
                 linha.get('Preco_Antigo', ''),
@@ -443,14 +443,14 @@ def processar_planilha():
             )
 
             if not valida:
-                print(f"⏭️ Descartando linha {indice_planilha} ({produto}): {resumo_val}")
+                print(f"[INFO] Descartando linha {indice_planilha} ({produto}): {resumo_val}")
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Descartado: {resumo_val}")
                 continue
 
             preco_antigo_fmt = formatar_preco(linha.get('Preco_Antigo', ''))
             preco_novo_fmt = formatar_preco(linha.get('Preco_Novo', ''))
 
-            print(f"🚀 Publicando oferta no canal {TELEGRAM_CHAT_ID}: {produto} ({ preco_antigo_fmt } -> { preco_novo_fmt })")
+            print(f"[INFO] Publicando oferta no canal {TELEGRAM_CHAT_ID}: {produto} ({ preco_antigo_fmt } -> { preco_novo_fmt })")
             texto = gerar_copy_telegram(
                 produto, preco_antigo_fmt, preco_novo_fmt,
                 linha.get('Link', ''), cupom_limpo, linha.get('Condicao', ''),
@@ -459,11 +459,11 @@ def processar_planilha():
             res = enviar_mensagem_telegram(TELEGRAM_CHAT_ID, texto, linha.get('Imagem_URL', ''))
             if res and res.get('ok'):
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, "Postado")
-                print("✅ Enviado para o Canal e marcado como Postado!")
+                print("[SUCCESS] Mensagem publicada no canal com sucesso.")
             else:
                 erro = res.get('description', 'Erro desconhecido') if res else 'Falha na requisição'
                 planilha.update_cell(indice_planilha, COL_STATUS_TG, f"Erro: {erro}")
-                print(f"❌ Erro no envio para o canal: {erro}")
+                print(f"[ERROR] Falha no envio para o canal: {erro}")
             time.sleep(2)
 
 if __name__ == "__main__":

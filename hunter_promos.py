@@ -134,7 +134,7 @@ def limpar_titulo_produto(titulo_bruto):
     t = re.sub(r'https?://\S+', '', str(titulo_bruto))
     # Remove emojis e símbolos decorativos iniciais
     t = re.sub(r'^[^\w\dÀ-ÿ]+', '', t).strip()
-    # Corta sufixos muito longos após hífen ou vírgula se já tiver tamanho suficiente
+    # Limita comprimento de titulos extensos preservando integridade da marca
     if len(t) > 55 and ' - ' in t:
         parte = t.split(' - ')[0].strip()
         if len(parte) >= 18:
@@ -240,7 +240,7 @@ def buscar_ofertas_telegram():
         for url, limite in urls_consulta:
             try:
                 if "?q=" not in url:
-                    print(f"📡 Lendo canal público: @{canal_limpo}...")
+                    print(f"[INFO] Consultando canal publico: @{canal_limpo}...")
                 resp = requests.get(url, headers=HEADERS, timeout=10)
                 if resp.status_code != 200:
                     continue
@@ -252,12 +252,12 @@ def buscar_ofertas_telegram():
                         textos_vistos.add(chave)
                         ofertas_brutas.append(item)
             except Exception as e:
-                print(f"   ⚠️ Erro ao ler {canal_limpo}: {e}")
+                print(f"   [WARN] Falha ao consultar {canal_limpo}: {e}")
 
     return ofertas_brutas
 
 # ==========================================
-# 5. FILTRO DE OURO: APENAS AMAZON (BLINDADO)
+# 5. FILTRO DE DESTINO: EXCLUSIVO AMAZON
 # ==========================================
 def encurtar_url(url_longa):
     try:
@@ -422,7 +422,7 @@ def consultar_pagina_amazon(asin):
     return info
 
 # ==========================================
-# 6. EXTRAÇÃO EM PYTHON PRIMEIRO + IA EM LOTE
+# 6. EXTRACAO EM PYTHON + HIGIENIZACAO VIA IA EM LOTE
 # ==========================================
 PISOS_CATEGORIA_PRECO = [
     (["ar condicionado", "ar-condicionado", "split inverter"], 1100.0),
@@ -453,7 +453,7 @@ def validar_coerencia_produto_preco(titulo, preco_novo_val, p_novo_amz=0.0):
     t_lower = str(titulo).lower()
 
     # 1. Se a própria página da Amazon retornou um preço atual e o preço extraído do post
-    # é menos de 40% do preço real na Amazon (ex: pegou valor da parcela "10x de R$ 59,90" ou frete), corrige ou descarta!
+    # Se o preco extraido divergir criticamente do preco oficial na Amazon, descarta inconsistencia
     if p_novo_amz > 0:
         if preco_novo_val < (p_novo_amz * 0.45) and (p_novo_amz - preco_novo_val) > 150.0:
             return False, f"Preço extraído (R$ {preco_novo_val:.2f}) diverge drasticamente do preço na Amazon (R$ {p_novo_amz:.2f})"
@@ -572,10 +572,10 @@ def extrair_dados_python(texto_post, info_amazon):
     if not titulo or preco_novo_val <= 0:
         return None
 
-    # 5. Trava de Veracidade Produto x Preço (barra ex: Ar Condicionado por R$ 59,90 ou divergência grave com a Amazon)
+    # 5. Validacao de Coerencia Categoria x Faixa de Preco
     coerente, motivo_coerencia = validar_coerencia_produto_preco(titulo, preco_novo_val, p_novo_amz)
     if not coerente:
-        print(f"   🚫 BLOQUEIO DE VERACIDADE: {motivo_coerencia}")
+        print(f"   [VALIDATION] Rejeitado por inconsistencia: {motivo_coerencia}")
         return None
 
     return {
@@ -639,11 +639,11 @@ def refinar_lote_com_ia(ofertas_aprovadas):
                             ofertas_aprovadas[idx]["dados"]["postar_insta"] = "NAO"
                         elif ref.get("postar_insta") in ("SIM", "NAO"):
                             ofertas_aprovadas[idx]["dados"]["postar_insta"] = ref["postar_insta"]
-            print(f"   ✨ Lote de {len(ofertas_aprovadas)} oferta(s) refinado com 1 única chamada ({modelo})!")
+            print(f"   [INFO] Lote de {len(ofertas_aprovadas)} oferta(s) refinado com 1 única chamada ({modelo})!")
             return ofertas_aprovadas
         except Exception as e:
             MODELOS_INDISPONIVEIS.add(modelo)
-            print(f"   ℹ️ Modelo {modelo} sem cota/indisponível no momento — mantendo higienização nativa do Python.")
+            print(f"   [INFO] Modelo {modelo} sem cota/indisponível no momento — mantendo higienização nativa do Python.")
 
     return ofertas_aprovadas
 
@@ -705,9 +705,9 @@ def obter_dados_existentes_blindados():
     proxima_linha_vazia = ultima_linha_preenchida + 1
     return produtos_set, links_set, asins_set, proxima_linha_vazia, registros_atuais
 def executar_hunter():
-    print(f"🏹 Iniciando o Hunter de Promoções (Exclusivo Amazon | Mínimo {DESCONTO_MINIMO_PCT:.0f}% OFF ou Cupom)...")
+    print(f"[INFO] Iniciando crawler de ofertas (Exclusivo Amazon | Mínimo {DESCONTO_MINIMO_PCT:.0f}% OFF ou Cupom)...")
     ofertas = buscar_ofertas_telegram()
-    print(f"📦 Total de mensagens brutas coletadas nos canais: {len(ofertas)}")
+    print(f"[INFO] Total de mensagens coletadas nas fontes: {len(ofertas)}")
 
     produtos_ja_cadastrados, links_ja_cadastrados, asins_ja_cadastrados, proxima_linha, registros_atuais = obter_dados_existentes_blindados()
     asins_processados = set(asins_ja_cadastrados)
@@ -742,7 +742,7 @@ def executar_hunter():
         asins_processados.add(asin_encontrado)
         analises_amazon += 1
 
-        print(f"\n🔎 Oferta Amazon detectada ({asin_encontrado}): {resumo_post}...")
+        print(f"[INFO] Oferta Amazon detectada ({asin_encontrado}): {resumo_post}...")
 
         # 3. Consulta dados oficiais na página da Amazon (título, foto limpa, preço e % OFF)
         info_amz = consultar_pagina_amazon(asin_encontrado)
@@ -750,17 +750,17 @@ def executar_hunter():
         # 4. Extrai dados e valida desconto em Python ANTES de gastar qualquer cota da IA!
         dados = extrair_dados_python(oferta['texto'], info_amz)
         if not dados or not dados.get('valido') or not dados.get('preco_novo'):
-            print("   ⏭️ DESCARTADO: Não foi possível identificar preço promocional.")
+            print("   [INFO] Descartado: Não foi possível identificar preço promocional.")
             continue
 
         aprovada, motivo, desconto_pct, cupom_limpo = validar_oferta_e_desconto(dados)
         if not aprovada:
-            print(f"   ⏭️ DESCARTADO ({motivo}): {dados.get('produto')}")
+            print(f"   [INFO] Descartado ({motivo}): {dados.get('produto')}")
             continue
 
         nome_preliminar = dados['produto'].strip().lower()
         if any(nome_preliminar[:16] in prod for prod in produtos_ja_cadastrados if prod):
-            print(f"   ⏭️ Pulando: '{dados['produto']}' já cadastrado na planilha.")
+            print(f"   [INFO] Item ja registrado na base: '{dados['produto']}' já cadastrado na planilha.")
             continue
 
         candidatas_aprovadas.append({
@@ -795,7 +795,7 @@ def executar_hunter():
         if vai_pro_insta == "SIM":
             formato_escolhido = "FOTO"
             status_insta = "Aguardando Geracao"
-            print(f"   📸 Selecionado para o Instagram no formato: FOTO")
+            print(f"   [INFO] Elegivel para Instagram no formato: FOTO")
 
         nova_linha = [
             nome_produto,                  # Coluna A: Produto
@@ -812,7 +812,7 @@ def executar_hunter():
             ""                             # Coluna L: Legenda_Insta
         ]
 
-        # Escreve explicitamente na próxima linha real vazia, nunca sobrescrevendo a linha 11
+        # Escreve na proxima linha disponivel para evitar sobreposicao de registros
         linha_destino = proxima_linha + novas_adicionadas
         try:
             planilha.update(f"A{linha_destino}:L{linha_destino}", [nova_linha], value_input_option='RAW')
@@ -823,9 +823,9 @@ def executar_hunter():
         links_ja_cadastrados.add(item["link_final_curto"])
         asins_ja_cadastrados.add(item["asin"])
         novas_adicionadas += 1
-        print(f"   ✅ APROVADA na Linha {linha_destino} ({item['motivo']}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
+        print(f"   [SUCCESS] Registrado na Linha {linha_destino} ({item['motivo']}): {nome_produto} | De R$ {preco_antigo_fmt or '--'} por R$ {preco_novo_fmt}")
 
-    print(f"\n🎯 Caçada finalizada! {novas_adicionadas} novas ofertas verificadas da AMAZON cadastradas.")
+    print(f"[INFO] Execucao concluida. {novas_adicionadas} novas ofertas verificadas da AMAZON cadastradas.")
 
 if __name__ == "__main__":
     executar_hunter()

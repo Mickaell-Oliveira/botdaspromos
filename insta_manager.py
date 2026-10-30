@@ -167,7 +167,7 @@ def preco_para_float(valor_str):
         if len(partes[-1]) == 3 and len(partes) > 1:
             s = s.replace('.', '')
     elif s.isdigit() and len(s) >= 3:
-        # Corrige valores em que o Google Sheets/gspread removeu a vírgula dos centavos (ex: "689,00" -> "68900")
+        # Normalizacao de centavos para valores numericos da planilha
         s = s[:-2] + "." + s[-2:]
     try:
         return float(s)
@@ -276,7 +276,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
                 py = area_prod_y1 + (alt_max_prod - prod_img.height) // 2
                 img.paste(prod_img, (px, py))
         except Exception as e:
-            print(f"⚠️ Aviso imagem: {e}")
+            print(f"[WARN] Falha ao renderizar imagem do produto: {e}")
 
         # 2. Nome do Produto na base interna do quadro branco (X=380..775, Y=602..690)
         f_prod = carregar_fonte(25, True)
@@ -288,7 +288,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
             draw.text((x_linha, y_prod), linha, fill=(20, 35, 90), font=f_prod)
             y_prod += 32
 
-        # 3. Preço Antigo sobre a linha "DE: R$ ________" (deslocado para a direita e centralizado na linha tracejada)
+        # 3. Preco Antigo: alinhamento e centralizacao na area demarcada
         val_antigo_num = preco_antigo.replace("R$", "").strip() if preco_antigo else ""
         if val_antigo_num:
             f_antigo = carregar_fonte(40, True)
@@ -377,7 +377,7 @@ def desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FO
             py = caixa_y1 + (altura_caixa - prod_img.height) // 2
             img.paste(prod_img, (px, py))
     except Exception as e:
-        print(f"⚠️ Aviso imagem: {e}")
+        print(f"[WARN] Falha ao renderizar imagem do produto: {e}")
 
     # 3. Nome do Produto
     y_texto = caixa_y2 + 45
@@ -463,12 +463,12 @@ def gerar_audio_narracao(texto_narracao, caminho_audio="locucao.mp3"):
             if resp.status_code == 200 and len(resp.content) > 1000:
                 with open(caminho_audio, "wb") as f:
                     f.write(resp.content)
-                print("   🎙️ Áudio gerado com sucesso via ElevenLabs (Voz: Otto)!")
+                print("   [INFO] Audio gerado via ElevenLabs (Voz: Otto)!")
                 return caminho_audio
             else:
-                print(f"   ⚠️ Aviso ElevenLabs ({resp.status_code}): {resp.text[:120]} — usando fallback...")
+                print(f"   [WARN] ElevenLabs ({resp.status_code}): {resp.text[:120]} — usando fallback...")
         except Exception as e:
-            print(f"   ⚠️ Erro na chamada ElevenLabs: {e} — usando fallback...")
+            print(f"   [WARN] Falha no servico ElevenLabs: {e} — usando fallback...")
 
     # 2. Fallback: Edge-TTS neural
     try:
@@ -478,7 +478,7 @@ def gerar_audio_narracao(texto_narracao, caminho_audio="locucao.mp3"):
         ], check=True, timeout=30)
         return caminho_audio
     except Exception as e:
-        print(f"   ⚠️ Aviso edge-tts ({e}), gerando áudio silencioso...")
+        print(f"   [WARN] Fallback TTS: ({e}), gerando áudio silencioso...")
         subprocess.run([
             "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
             "-t", "7", "-q:a", "9", "-acodec", "libmp3lame", caminho_audio
@@ -600,7 +600,7 @@ def obter_url_midia_telegram(msg_telegram, formato):
         if file_path:
             return f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
     except Exception as e:
-        print(f"⚠️ Aviso ao obter mídia do Telegram: {e}")
+        print(f"[WARN] Falha ao recuperar midia: {e}")
     return None
 
 def upload_midia_publica_temporaria(caminho_arquivo):
@@ -624,10 +624,10 @@ def upload_midia_publica_temporaria(caminho_arquivo):
             )
             if r.status_code == 200 and r.text.strip().startswith("http"):
                 url_gerada = r.text.strip()
-                print(f"   ☁️ Mídia hospedada via Litterbox: {url_gerada}")
+                print(f"   [INFO] Midia hospedada temporariamente (Litterbox): {url_gerada}")
                 return url_gerada
     except Exception as e:
-        print(f"   ⚠️ Aviso Litterbox: {e}")
+        print(f"   [WARN] Servico Litterbox: {e}")
 
     # 2. Fallback: Uguu.se (serve image/jpeg direto sem redirecionamento)
     try:
@@ -641,10 +641,10 @@ def upload_midia_publica_temporaria(caminho_arquivo):
             files_list = r.get("files", [])
             if files_list and files_list[0].get("url"):
                 url_gerada = files_list[0]["url"]
-                print(f"   ☁️ Mídia hospedada via Uguu: {url_gerada}")
+                print(f"   [INFO] Midia hospedada temporariamente (Uguu): {url_gerada}")
                 return url_gerada
     except Exception as e:
-        print(f"   ⚠️ Aviso Uguu: {e}")
+        print(f"   [WARN] Servico Uguu: {e}")
 
     # 3. Fallback: CDN Oficial do Telegram (mantém arquivo ativo sem delete prematuro)
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
@@ -673,10 +673,10 @@ def upload_midia_publica_temporaria(caminho_arquivo):
                 file_path = r_file.get("result", {}).get("file_path")
                 if file_path:
                     url_gerada = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-                    print(f"   ☁️ Mídia hospedada via Telegram CDN: {url_gerada}")
+                    print(f"   [INFO] Midia hospedada via Telegram CDN: {url_gerada}")
                     return url_gerada
         except Exception as e:
-            print(f"   ⚠️ Aviso Telegram CDN: {e}")
+            print(f"   [WARN] Telegram CDN: {e}")
 
     return None
 
@@ -708,7 +708,7 @@ def descobrir_ig_user_id(token):
         if r_ig.get("user_id") or r_ig.get("id"):
             return str(r_ig.get("user_id") or r_ig.get("id"))
     except Exception as e:
-        print(f"⚠️ Erro ao descobrir IG_USER_ID: {e}")
+        print(f"[WARN] Falha ao resolver IG_USER_ID: {e}")
     return ""
 
 def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
@@ -796,7 +796,7 @@ def publicar_linha_no_instagram(linha_idx, msg_telegram=None):
             return False, f"Erro ao criar container na Meta: {detalhe_str}"
 
         creation_id = r_cont["id"]
-        print(f"   ⏳ Container Instagram criado ({creation_id}). Aguardando processamento...")
+        print(f"   [INFO] Container Instagram criado ({creation_id}). Aguardando processamento...")
 
         # 3. Aguarda o processamento do container (especialmente para Reels/Vídeos)
         for _ in range(12):
@@ -896,7 +896,7 @@ def publicar_story_no_instagram(produto, preco_antigo, preco_novo, cupom, url_im
         ).json()
 
         if "id" in r_pub:
-            print(f"   📸 Story publicado com sucesso no Instagram! (ID: {r_pub['id']})")
+            print(f"   [SUCCESS] Story publicado no Instagram (ID: {r_pub['id']})")
             return True, r_pub["id"]
         else:
             return False, r_pub.get("error", {}).get("message", str(r_pub))
@@ -1072,7 +1072,7 @@ def interpretar_e_aplicar_sugestao_admin(linha_idx, texto_sugestao):
             data={"chat_id": ADMIN_CHAT_ID, "text": f"✏️ Linha {linha_idx} atualizada!\n{msg_feedback}\n\n🔄 As prévias serão recriadas automaticamente com os novos dados."}
         )
     except Exception as e:
-        print(f"⚠️ Erro ao interpretar sugestão: {e}")
+        print(f"[ERROR] Falha ao interpretar comando do administrador: {e}")
         planilha.update_cell(linha_idx, COL_STATUS_INSTA, f"Regerar|{texto_sugestao}")
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -1129,20 +1129,20 @@ def verificar_respostas_do_admin():
                 match = re.search(r"Linha\s*(\d+)", caption_original)
                 if match and msg.get("text"):
                     linha = int(match.group(1))
-                    print(f"📩 Sugestão do Admin recebida para Linha {linha}: {msg['text']}")
+                    print(f"[INFO] Instrucao recebida para Linha {linha}: {msg['text']}")
                     interpretar_e_aplicar_sugestao_admin(linha, msg['text'])
 
         if maior_id > 0:
             requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={maior_id + 1}", timeout=5)
     except Exception as e:
-        print(f"⚠️ Aviso ao verificar respostas do Admin: {e}")
+        print(f"[WARN] Falha ao consultar respostas do administrador: {e}")
 
 # ==========================================
 # 6. FLUXO PRINCIPAL
 # ==========================================
 def processar_fila_instagram():
     verificar_respostas_do_admin()
-    print("\n🎨 Verificando fila de criação do Instagram...")
+    print("[INFO] Verificando fila de publicacao do Instagram...")
     registros = planilha.get_all_records(numericise_ignore=['all'])
     estado_insta = verificar_janelas_instagram(registros)
     gerados = 0
@@ -1151,7 +1151,7 @@ def processar_fila_instagram():
     # Percorre da linha mais recente (final da planilha) para a mais antiga, garantindo sempre ofertas frescas
     itens_planilha = list(enumerate(registros, start=2))
 
-    # Limpa eventuais status legados "Aguardando Janela Feed" antigos para não postar promoção velha no Feed
+    # Expurgo de status legados expirados para manter a vitrine do Feed atualizada
     agora_limpeza = time.time()
     for indice_l, linha_l in itens_planilha:
         st_l = str(linha_l.get('Status_Insta', '')).strip()
@@ -1171,22 +1171,22 @@ def processar_fila_instagram():
         if status == "Aprovado" and IG_ACCESS_TOKEN:
             if not estado_insta["pode_feed"]:
                 if estado_insta["posts_feed_hoje"] >= MAX_POSTS_FEED_DIA:
-                    print(f"   ⏳ Limite diário atingido ({estado_insta['posts_feed_hoje']}/{MAX_POSTS_FEED_DIA} posts no Feed hoje). Linha {indice} aguarda próximo ciclo.")
+                    print(f"   [INFO] Limite diario atingido ({estado_insta['posts_feed_hoje']}/{MAX_POSTS_FEED_DIA} posts no Feed hoje). Linha {indice} aguarda próximo ciclo.")
                 else:
                     espera_min = max(1, int((INTERVALO_MINIMO_FEED_HORAS - estado_insta["horas_desde_feed"]) * 60))
-                    print(f"   ⏳ Distribuição de Feed: Último post foi há {estado_insta['horas_desde_feed']:.1f}h. Aguardando {espera_min} min (intervalo de {INTERVALO_MINIMO_FEED_HORAS:.0f}h).")
+                    print(f"   [INFO] Controle de cadencia de Feed: Último post foi há {estado_insta['horas_desde_feed']:.1f}h. Aguardando {espera_min} min (intervalo de {INTERVALO_MINIMO_FEED_HORAS:.0f}h).")
                 continue
 
-            print(f"🚀 Publicando Linha {indice} aprovada no Feed do Instagram...")
+            print(f"[INFO] Publicando Linha {indice} aprovada no Feed do Instagram...")
             ok_ig, msg_ig = publicar_linha_no_instagram(indice)
             if ok_ig:
                 agora_ts = int(time.time())
                 planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
-                print(f"   🎉 Linha {indice} publicada no Feed do Instagram (ID: {msg_ig})!")
+                print(f"   [SUCCESS] Linha {indice} publicada no Feed do Instagram (ID: {msg_ig})!")
                 publicou_neste_ciclo = True
                 break
             else:
-                print(f"   ⚠️ Falha ao publicar Linha {indice}: {msg_ig}")
+                print(f"   [ERROR] Falha ao publicar Linha {indice}: {msg_ig}")
             continue
 
         if (postar_insta == "SIM" and status in ["", "Aguardando Geracao"]) or status.startswith("Regerar"):
@@ -1202,7 +1202,7 @@ def processar_fila_instagram():
             )
 
             if not valida:
-                print(f"⏭️ Linha {indice} ({produto}) descartada do Instagram: {resumo_val}")
+                print(f"[INFO] Linha {indice} ({produto}) descartada do Instagram: {resumo_val}")
                 planilha.update_cell(indice, COL_STATUS_INSTA, f"Descartado: {resumo_val}")
                 continue
 
@@ -1210,7 +1210,7 @@ def processar_fila_instagram():
             preco_novo_float = preco_para_float(linha.get('Preco_Novo', ''))
             elegivel_vitrine, motivo_vitrine = produto_elegivel_vitrine_insta(produto, preco_novo_float)
             if not elegivel_vitrine and not status.startswith("Regerar"):
-                print(f"⏭️ Linha {indice} ({produto}) ignorada na vitrine do Instagram: {motivo_vitrine}")
+                print(f"[INFO] Linha {indice} ({produto}) ignorada na vitrine do Instagram: {motivo_vitrine}")
                 planilha.update_cell(indice, COL_POSTAR_INSTA, "NAO")
                 planilha.update_cell(indice, COL_STATUS_INSTA, f"Ignorado: {motivo_vitrine}")
                 continue
@@ -1227,7 +1227,7 @@ def processar_fila_instagram():
             # ----------------------------------------------------
             if formato_linha == "VIDEO":
                 try:
-                    print(f"🎬 Gerando criativo de VÍDEO (Reels) da Linha {indice}: {produto} ({resumo_val})")
+                    print(f"[INFO] Gerando criativo de video (Reels) da Linha {indice}: {produto} ({resumo_val})")
                     textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom_limpo, condicao, inst_extra, desconto_pct=desconto_pct)
                     legenda = textos['legenda']
 
@@ -1237,11 +1237,11 @@ def processar_fila_instagram():
                         planilha.update_cell(indice, COL_STATUS_INSTA, "Em Aprovacao")
                         planilha.update_cell(indice, COL_LEGENDA_INSTA, legenda)
                         gerados += 1
-                        print(f"   ✅ Prévia do Vídeo enviada ao Admin para aprovação (msg_id={msg_id})!")
+                        print(f"   [INFO] Previa de video enviada ao administrador para aprovação (msg_id={msg_id})!")
                     if gerados >= 1:
                         break
                 except Exception as e:
-                    print(f"❌ Erro ao gerar vídeo da Linha {indice}: {e}")
+                    print(f"[ERROR] Falha ao gerar video da Linha {indice}: {e}")
                 continue
 
             # ----------------------------------------------------
@@ -1249,51 +1249,51 @@ def processar_fila_instagram():
             # ----------------------------------------------------
             if not estado_insta["pode_story"]:
                 espera_st = max(1, int(INTERVALO_MINIMO_STORY_MINUTOS - estado_insta["minutos_desde_envio"]))
-                print(f"   ⏳ Anti-Spam Instagram: Último envio foi há {estado_insta['minutos_desde_envio']:.0f} min. Aguardando {espera_st} min para não postar promoções seguidas.")
+                print(f"   [INFO] Rate-limiting Instagram: Último envio foi há {estado_insta['minutos_desde_envio']:.0f} min. Aguardando {espera_st} min para não postar promoções seguidas.")
                 break
 
             try:
                 agora_ts = int(time.time())
-                print(f"📸 Publicando Linha {indice} automaticamente nos Stories do Instagram (9:16)...")
+                print(f"[INFO] Publicando Linha {indice} automaticamente nos Stories do Instagram (9:16)...")
                 ok_st, msg_st = publicar_story_no_instagram(
                     produto, preco_antigo, preco_novo, cupom_limpo, url_img, desconto_pct=desconto_pct
                 )
                 if ok_st:
-                    print(f"   🎉 Story postado com sucesso no Instagram! (ID: {msg_st})")
+                    print(f"   [SUCCESS] Story publicado no Instagram (ID: {msg_st})")
                 else:
-                    print(f"   ℹ️ Aviso Story: {msg_st}")
+                    print(f"   [INFO] Retorno Story: {msg_st}")
 
                 if estado_insta["pode_feed"] and IG_ACCESS_TOKEN:
-                    print(f"🚀 Publicando Linha {indice} automaticamente no Feed do Instagram ({estado_insta['posts_feed_hoje'] + 1}/{MAX_POSTS_FEED_DIA} hoje)...")
+                    print(f"[INFO] Publicando Linha {indice} automaticamente no Feed do Instagram ({estado_insta['posts_feed_hoje'] + 1}/{MAX_POSTS_FEED_DIA} hoje)...")
                     sucesso_feed, detalhe_feed = publicar_linha_no_instagram(indice)
                     if sucesso_feed:
                         planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
-                        print(f"   🎉 Linha {indice} publicada no Feed do Instagram! (ID: {detalhe_feed})")
+                        print(f"   [SUCCESS] Linha {indice} publicada no Feed do Instagram ! (ID: {detalhe_feed})")
                         if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
                             requests.post(
                                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                                 data={"chat_id": ADMIN_CHAT_ID, "text": f"🎉 Oferta publicada automaticamente no Feed ({estado_insta['posts_feed_hoje'] + 1}/{MAX_POSTS_FEED_DIA} hoje) e Stories do Instagram!\n\n📦 {produto}\n💰 {preco_novo}\n🆔 Post ID: {detalhe_feed}"}
                             )
                     else:
-                        print(f"   ⚠️ Falha ao publicar no Feed da Linha {indice}: {detalhe_feed}")
+                        print(f"   [ERROR] Falha ao publicar no Feed da Linha {indice}: {detalhe_feed}")
                         if ok_st:
                             planilha.update_cell(indice, COL_STATUS_INSTA, f"Story Publicado em {agora_ts}")
                 else:
                     if not IG_ACCESS_TOKEN:
-                        print("   ⚠️ IG_ACCESS_TOKEN não configurado para postar no Feed.")
+                        print("   [WARN] IG_ACCESS_TOKEN nao configurado para postagem no Feed.")
                     else:
                         motivo_espera = (
                             f"limite diário {estado_insta['posts_feed_hoje']}/{MAX_POSTS_FEED_DIA} atingido"
                             if estado_insta["posts_feed_hoje"] >= MAX_POSTS_FEED_DIA
                             else f"último Feed há {estado_insta['horas_desde_feed']:.1f}h (mín. {INTERVALO_MINIMO_FEED_HORAS:.0f}h)"
                         )
-                        print(f"   ✅ Story publicado ({motivo_espera}). Linha finalizada apenas no Story para não acumular fila antiga no Feed.")
+                        print(f"   [SUCCESS] Story publicado ({motivo_espera}). Linha finalizada apenas no Story para não acumular fila antiga no Feed.")
                         planilha.update_cell(indice, COL_STATUS_INSTA, f"Story Publicado em {agora_ts}")
 
                 publicou_neste_ciclo = True
                 break
             except Exception as e:
-                print(f"❌ Erro no processamento automático da Linha {indice}: {e}")
+                print(f"[ERROR] Falha no processamento da Linha {indice}: {e}")
 
     # Fallback de Frescor (máx. 2 horas): Se a janela do Feed (4h) estiver aberta e não entrou oferta inédita neste minuto,
     # pode promover apenas o Story mais recente das últimas 2 horas (nunca ofertas antigas)
@@ -1307,11 +1307,11 @@ def processar_fila_instagram():
                 if (agora_ts - ts_story) <= 7200:  # Máximo 2 horas de idade
                     produto_nome = str(linha.get('Produto', '')).strip()
                     preco_n = formatar_preco(str(linha.get('Preco_Novo', '')))
-                    print(f"🚀 Janela do Feed aberta: promovendo oferta recente (<2h) da Linha {indice} ({produto_nome})...")
+                    print(f"[INFO] Janela de Feed disponivel: promovendo oferta recente (<2h) da Linha {indice} ({produto_nome})...")
                     ok_ig, msg_ig = publicar_linha_no_instagram(indice)
                     if ok_ig:
                         planilha.update_cell(indice, COL_STATUS_INSTA, f"Publicado em {agora_ts}")
-                        print(f"   🎉 Linha {indice} publicada no Feed do Instagram! (ID: {msg_ig})")
+                        print(f"   [SUCCESS] Linha {indice} publicada no Feed do Instagram ! (ID: {msg_ig})")
                         if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
                             requests.post(
                                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",

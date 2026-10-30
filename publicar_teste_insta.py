@@ -34,10 +34,10 @@ cliente_sheets = gspread.authorize(credenciais)
 planilha = cliente_sheets.open(NOME_DA_PLANILHA).sheet1
 
 def publicar_ultima_linha(forcar_formato=None):
-    print("📋 Lendo planilha para encontrar a última oferta válida e autêntica para o Instagram...")
+    print("[INFO] Consultando base de dados para selecao da oferta...para encontrar a última oferta válida e autêntica para o Instagram...")
     registros = planilha.get_all_records(numericise_ignore=['all'])
     if not registros:
-        print("❌ Nenhum registro encontrado na planilha.")
+        print("[WARN] Nenhum registro encontrado na planilha.na planilha.")
         return
 
     indice_linha = None
@@ -66,10 +66,10 @@ def publicar_ultima_linha(forcar_formato=None):
             cupom_sel = cup_limpo
             break
         else:
-            print(f"   ⏭️ Pulando Linha {num_linha} ({prod_cand} - R$ {p_novo_cand:.2f}): {motivo_vitrine if not elegivel else resumo_val}")
+            print(f"   [INFO] Ignorando Linha {num_linha} ({prod_cand} - R$ {p_novo_cand:.2f}): {motivo_vitrine if not elegivel else resumo_val}")
 
     if not linha:
-        print("❌ Nenhuma linha recente passou na validação de veracidade e vitrine (>= R$ 80).")
+        print("[INFO] Nenhuma linha recente atende aos criterios de vitrine.passou na validação de veracidade e vitrine (>= R$ 80).")
         return
 
     produto = str(linha.get('Produto', '')).strip()
@@ -82,42 +82,42 @@ def publicar_ultima_linha(forcar_formato=None):
 
     formato = (forcar_formato or formato_original or "VIDEO").upper()
 
-    print(f"\n🎯 Linha selecionada: Linha {indice_linha}")
-    print(f"📦 Produto: {produto}")
-    print(f"💰 De: {preco_antigo or '--'} | Por: {preco_novo}")
-    print(f"🖼️ Formato: {formato}")
+    print(f"[INFO] Registro selecionado: Linha {indice_linha}")
+    print(f"[INFO] Produto: {produto}")
+    print(f"[INFO] Preco De: {preco_antigo or '--'} | Por: {preco_novo}")
+    print(f"[INFO] Formato: {formato}")
 
     if not IG_ACCESS_TOKEN:
-        print("❌ ERRO: IG_ACCESS_TOKEN não está definido nas variáveis de ambiente.")
+        print("[ERROR] IG_ACCESS_TOKEN nao configurado no ambiente.não está definido nas variáveis de ambiente.")
         return
 
     ig_id = descobrir_ig_user_id(IG_ACCESS_TOKEN) or IG_USER_ID
     if not ig_id:
-        print("❌ ERRO: Não foi possível obter o IG_USER_ID da conta.")
+        print("[ERROR] Nao foi possivel obter IG_USER_ID.da conta.")
         return
-    print(f"👤 Instagram Account ID: {ig_id}")
+    print(f"[INFO] Instagram Account ID: {ig_id}")
 
     # 1. Gerar Textos e Legenda
-    print("\n📝 Gerando legenda...")
+    print("[INFO] Gerando copywriting...")
     textos = criar_textos_insta(produto, preco_antigo, preco_novo, cupom, condicao, desconto_pct=desconto_pct_sel)
     legenda = textos['legenda']
 
     # 2. Gerar Mídia Local
-    print(f"🎨 Gerando mídia ({formato})...")
+    print(f"[INFO] Renderizando criativo ({formato})...")
     if formato == "VIDEO":
         caminho_midia = gerar_reels_mp4(produto, preco_antigo, preco_novo, cupom, url_img, textos['narracao'], desconto_pct=desconto_pct_sel)
     else:
         caminho_midia = desenhar_arte(produto, preco_antigo, preco_novo, cupom, url_img, formato="FOTO", desconto_pct=desconto_pct_sel)
 
-    print(f"✅ Mídia gerada em: {caminho_midia}")
+    print(f"[SUCCESS] Midia gerada em: {caminho_midia}")
 
     # 3. Gerar URL pública temporária para a Meta baixar
-    print("☁️ Fazendo upload temporário da mídia...")
+    print("[INFO] Realizando upload temporario da midia...")
     media_url = upload_midia_publica_temporaria(caminho_midia)
     if not media_url:
-        print("❌ Falha ao obter URL pública da mídia.")
+        print("[ERROR] Falha ao obter URL publica da midia.")
         return
-    print(f"🔗 Mídia disponível em: {media_url}")
+    print(f"[INFO] Midia acessivel em: {media_url}")
 
     # 4. Enviar para a Graph API da Meta
     # Tenta publicar tanto no host Facebook Graph quanto Instagram Graph caso haja diferença de escopo do Token
@@ -140,7 +140,7 @@ def publicar_ultima_linha(forcar_formato=None):
     else:
         payload["image_url"] = media_url
 
-    print("🚀 Criando container de publicação na Meta...")
+    print("[INFO] Criando container de publicacao via Meta Graph API...")
     r_cont = None
     base_usada = ""
     for host in hosts_api:
@@ -152,14 +152,14 @@ def publicar_ultima_linha(forcar_formato=None):
             base_usada = host
             break
         else:
-            print(f"   ⚠️ Aviso ({host}): {resp.get('error', {}).get('message', resp)}")
+            print(f"   [WARN] Resposta da API ({host}): {resp.get('error', {}).get('message', resp)}")
 
     if not r_cont or "id" not in r_cont:
-        print(f"\n❌ Erro da Meta ao criar container: Verifique se o IG_USER_ID é o ID Comercial (1784...) e se o Token tem a permissão 'instagram_content_publish'.")
+        print(f"[ERROR] Falha na criacao do container Meta: Verifique se o IG_USER_ID é o ID Comercial (1784...) e se o Token tem a permissão 'instagram_content_publish'.")
         return
 
     creation_id = r_cont["id"]
-    print(f"⏳ Container criado ({creation_id}). Aguardando processamento...")
+    print(f"[INFO] Container criado ({creation_id}). Aguardando processamento...")
 
     # Aguardar processamento
     for tentativa in range(15):
@@ -174,11 +174,11 @@ def publicar_ultima_linha(forcar_formato=None):
         if status_code == "FINISHED" or (formato == "FOTO" and not status_code):
             break
         if status_code == "ERROR":
-            print(f"❌ A Meta recusou a mídia: {r_status}")
+            print(f"[ERROR] Processamento recusado pela Meta: {r_status}")
             return
 
     # 5. Publicar!
-    print("📢 Publicando container no Instagram...")
+    print("[INFO] Publicando container no Instagram...")
     r_pub = requests.post(
         f"{base_usada}/{ig_id}/media_publish",
         data={"creation_id": creation_id, "access_token": IG_ACCESS_TOKEN},
@@ -187,8 +187,8 @@ def publicar_ultima_linha(forcar_formato=None):
 
     if "id" in r_pub:
         post_id = r_pub["id"]
-        print(f"\n🎉 SUCESSO TOTAL! Publicação realizada no Instagram!")
-        print(f"🆔 Post ID: {post_id}")
+        print("[SUCCESS] Publicacao realizada com sucesso no Instagram.")
+        print(f"[INFO] Post ID: {post_id}")
         planilha.update_cell(indice_linha, 11, "Publicado")  # Coluna K: Status_Insta
         if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
             requests.post(
@@ -199,7 +199,7 @@ def publicar_ultima_linha(forcar_formato=None):
                 }
             )
     else:
-        print(f"❌ Falha ao publicar: {r_pub}")
+        print(f"[ERROR] Falha na publicacao: {r_pub}")
 
 if __name__ == "__main__":
     formato_arg = sys.argv[1].upper() if len(sys.argv) > 1 else None
